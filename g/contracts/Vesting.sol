@@ -10,6 +10,7 @@ contract Vesting is AccessControl, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     bytes32 public constant FUNDER_ROLE = keccak256("FUNDER_ROLE");
+    bytes32 public constant SALE_ROLE = keccak256("SALE_ROLE");  // ← جديد
 
     uint256 public constant CLIFF = 30 days;
     uint256 public constant VESTING_DURATION = 90 days;
@@ -57,6 +58,9 @@ contract Vesting is AccessControl, ReentrancyGuard {
     uint256 public totalReleased;
     uint256 public obligations;
 
+    // ← جديد: تتبع المشتريات من Sale
+    mapping(address => uint256) public salePurchased;
+
     event VestingCreated(address indexed user, uint256 total, uint256 immediate, uint256 vest);
     event VestingCancelled(address indexed user, uint256 remaining);
     event TokensReleased(address indexed user, uint256 amount);
@@ -66,6 +70,7 @@ contract Vesting is AccessControl, ReentrancyGuard {
     event Finalized(uint256 timestamp);
     event GovernanceEnded();
     event Funded(address indexed from, uint256 amount);
+    event SaleDeposit(address indexed user, uint256 amount);  // ← جديد
 
     constructor(
         address _token,
@@ -103,6 +108,8 @@ contract Vesting is AccessControl, ReentrancyGuard {
         require(!finalized, "Finalized");
         _;
     }
+
+    // ========== دوال Multi-Sig الأصلية ==========
 
     function fund(uint256 amount) external onlyRole(FUNDER_ROLE) onlyActive {
         require(amount > 0, "Zero amount");
@@ -161,6 +168,43 @@ contract Vesting is AccessControl, ReentrancyGuard {
         emit ProposalExecuted(id);
     }
 
+    // ========== دوال Vesting الأصلية ==========
+
+    function release() external nonReentrant {
+        VestingSchedule storage s = vesting[msg.sender];
+        require(s.active, "Inactive");
+
+        uint256 amount = releasable(msg.sender);
+        require(amount > 0, "Nothing");
+
+        s.released += amount;
+        obligations -= amount;
+        totalReleased += amount;
+
+        token.safeTransfer(msg.sender, amount);
+
+        emit TokensReleased(msg.sender, amount);
+    }
+
+    function releasable(address user) public view returns (uint256) {
+        VestingSchedule storage s = vesting[user];
+        if (!s.active) return 0;
+
+        if (block.timestamp < s.start + CLIFF) return 0;
+
+        if (block.timestamp >= s.start + VESTING_DURATION) {
+            return s.vestingAllocation - s.released;
+        }
+
+        uint256 elapsed = block.timestamp - s.start - CLIFF;
+        uint256 duration = VESTING_DURATION - CLIFF;
+
+        uint256 vested = (s.vestingAllocation * elapsed) / duration;
+        return vested > s.released ? vested - s.released : 0;
+    }
+
+    // ========== دوال داخلية ==========
+
     function _create(address user, uint256 amount) internal {
         require(user != address(0), "Invalid user");
         require(!vesting[user].active && !vesting[user].cancelled, "Exists");
@@ -202,45 +246,11 @@ contract Vesting is AccessControl, ReentrancyGuard {
 
         obligations -= remaining;
 
-        // FIXED BUG: send to user, NOT msg.sender
         if (remaining > 0) {
             token.safeTransfer(user, remaining);
         }
 
         emit VestingCancelled(user, remaining);
-    }
-
-    function release() external nonReentrant {
-        VestingSchedule storage s = vesting[msg.sender];
-        require(s.active, "Inactive");
-
-        uint256 amount = releasable(msg.sender);
-        require(amount > 0, "Nothing");
-
-        s.released += amount;
-        obligations -= amount;
-        totalReleased += amount;
-
-        token.safeTransfer(msg.sender, amount);
-
-        emit TokensReleased(msg.sender, amount);
-    }
-
-    function releasable(address user) public view returns (uint256) {
-        VestingSchedule storage s = vesting[user];
-        if (!s.active) return 0;
-
-        if (block.timestamp < s.start + CLIFF) return 0;
-
-        if (block.timestamp >= s.start + VESTING_DURATION) {
-            return s.vestingAllocation - s.released;
-        }
-
-        uint256 elapsed = block.timestamp - s.start - CLIFF;
-        uint256 duration = VESTING_DURATION - CLIFF;
-
-        uint256 vested = (s.vestingAllocation * elapsed) / duration;
-        return vested > s.released ? vested - s.released : 0;
     }
 
     function _finalize() internal {
@@ -261,6 +271,75 @@ contract Vesting is AccessControl, ReentrancyGuard {
             emit GovernanceEnded();
         }
     }
+
+    // ========== دوال جديدة للـ Sale ==========
+
+    /// @notice منح صلاحية Sale Contract
+    function grantSaleRole(address saleContract) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(saleContract != address(0), "Invalid address");
+        _grantRole(SALE_ROLE, saleContract);
+    }
+
+    /// @notice سحب صلاحية Sale Contract
+    function revokeSaleRole(address saleContract) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        _revokeRole(SALE_ROLE, saleContract);
+    }
+
+    /// @notice إيداع مباشر من Sale Contract (25% فوراً + 75% قفل)
+    function deposit(address user, uint256 amount) external onlyRole(SALE_ROLE) nonReentrant {
+        require(amount > 0, "Zero amount");
+        require(user != address(0), "Invalid user");
+        require(!vesting[user].active && !vesting[user].cancelled, "Vesting exists");
+
+        uint256 immediate = (amount * 2500) / 10000;  // 25%
+        uint256 vest = amount - immediate;            // 75%
+
+        require(token.balanceOf(address(this)) >= obligations + vest, "Insufficient balance");
+
+        // تحديث الحالة
+        vesting[user] = VestingSchedule(
+            amount,
+            vest,
+            0,
+            uint64(block.timestamp),
+            true,
+            false,
+            immediate
+        );
+
+        obligations += vest;
+        totalAllocated += amount;
+        totalReleased += immediate;
+        salePurchased[user] += amount;
+
+        // إرسال 25% فوراً
+        if (immediate > 0) {
+            token.safeTransfer(user, immediate);
+        }
+
+        emit SaleDeposit(user, amount);
+        emit VestingCreated(user, amount, immediate, vest);
+    }
+
+    /// @notice الحصول على معلومات مشتريات المستخدم من Sale
+    function getSaleInfo(address user) external view returns (
+        uint256 totalPurchased,
+        uint256 immediateReceived,
+        uint256 lockedAmount,
+        uint256 releasableAmount,
+        uint256 releasedAmount
+    ) {
+        VestingSchedule memory s = vesting[user];
+        return (
+            salePurchased[user],
+            s.immediate,
+            s.vestingAllocation,
+            releasable(user),
+            s.released
+        );
+    }
+
+    // ========== دوال الاستعلام ==========
 
     function getSigners() external view returns (address[] memory) { return signers; }
     function getProposal(bytes32 id) external view returns (Proposal memory) { return proposals[id]; }
