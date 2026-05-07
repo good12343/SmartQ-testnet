@@ -304,11 +304,12 @@ contract Vesting is AccessControl, ReentrancyGuard {
         if (!s.active) {
         s.start = uint64(block.timestamp);
         s.active = true;
-       }
+        s.cancelled = false;
+        }
 
         s.totalAllocation += amount;
         s.vestingAllocation += vest;
-        s.immediate += immediate
+        s.immediate += immediate;
         
 
         obligations += vest;
