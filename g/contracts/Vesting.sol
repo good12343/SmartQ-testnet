@@ -289,7 +289,10 @@ contract Vesting is AccessControl, ReentrancyGuard {
     function deposit(address user, uint256 amount) external onlyRole(SALE_ROLE) nonReentrant {
         require(amount > 0, "Zero amount");
         require(user != address(0), "Invalid user");
-        require(!vesting[user].active && !vesting[user].cancelled, "Vesting exists");
+        VestingSchedule storage s = vesting[user];
+
+        require(!s.cancelled, "Cancelled");
+
 
         uint256 immediate = (amount * 2500) / 10000;  // 25%
         uint256 vest = amount - immediate;            // 75%
@@ -297,15 +300,16 @@ contract Vesting is AccessControl, ReentrancyGuard {
         require(token.balanceOf(address(this)) >= obligations + vest, "Insufficient balance");
 
         // تحديث الحالة
-        vesting[user] = VestingSchedule(
-            amount,
-            vest,
-            0,
-            uint64(block.timestamp),
-            true,
-            false,
-            immediate
-        );
+        
+        if (!s.active) {
+        s.start = uint64(block.timestamp);
+        s.active = true;
+       }
+
+        s.totalAllocation += amount;
+        s.vestingAllocation += vest;
+        s.immediate += immediate
+        
 
         obligations += vest;
         totalAllocated += amount;
