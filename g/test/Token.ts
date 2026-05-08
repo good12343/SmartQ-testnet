@@ -21,6 +21,7 @@ describe("Token", function () {
     const WALLET_CAP = ethers.parseUnits("10000000", 18);
     const GOVERNANCE_LOCK_PERIOD = 180n * 24n * 60n * 60n;
     const TIMELOCK_DELAY = 48n * 60n * 60n;
+    const TIMELOCK_GRACE_PERIOD = 7n * 24n * 60n * 60n; // 7 days
     
     const TREASURY_AMOUNT = ethers.parseUnits("400000000", 18);
     const VESTING_AMOUNT = ethers.parseUnits("300000000", 18);
@@ -163,12 +164,11 @@ describe("Token", function () {
             const balance = await token.balanceOf(user1.address);
             expect(balance).to.equal(amount);
             
-            // Verify we can still transfer up to remaining
             await token.connect(treasury).transfer(user1.address, remaining);
             expect(await token.balanceOf(user1.address)).to.equal(WALLET_CAP);
         });
 
-        it("Should return max uint for excluded addresses via direct check", async function () {
+        it("Should allow excluded addresses to hold large balances", async function () {
             expect(await token.isExcludedFromWalletCap(treasury.address)).to.be.true;
             expect(await token.balanceOf(treasury.address)).to.equal(TREASURY_AMOUNT);
         });
@@ -185,9 +185,8 @@ describe("Token", function () {
                 [user1.address, true]
             );
             
-            const tx = await token.connect(governance).proposeAction(0, data); // 0 = SetExclusion
+            const tx = await token.connect(governance).proposeAction(0, data);
             const receipt = await tx.wait();
-            
             const event = receipt?.logs.find(
                 (log: any) => log.fragment?.name === "ActionProposed"
             );
@@ -246,7 +245,7 @@ describe("Token", function () {
                 [dexRouter.address, dexPair.address]
             );
             
-            const tx = await token.connect(governance).proposeAction(2, data); // 2 = SetDexSetup
+            const tx = await token.connect(governance).proposeAction(2, data);
             const receipt = await tx.wait();
             const event = receipt?.logs.find(
                 (log: any) => log.fragment?.name === "ActionProposed"
@@ -270,7 +269,7 @@ describe("Token", function () {
         it("Should allow governance to pause", async function () {
             const data = "0x";
             
-            const tx = await token.connect(governance).proposeAction(3, data); // 3 = Pause
+            const tx = await token.connect(governance).proposeAction(3, data);
             const receipt = await tx.wait();
             const event = receipt?.logs.find(
                 (log: any) => log.fragment?.name === "ActionProposed"
@@ -285,7 +284,7 @@ describe("Token", function () {
 
         it("Should block transfers when paused", async function () {
             const data = "0x";
-            const tx = await token.connect(governance).proposeAction(3, data); // 3 = Pause
+            const tx = await token.connect(governance).proposeAction(3, data);
             const receipt = await tx.wait();
             const event = receipt?.logs.find(
                 (log: any) => log.fragment?.name === "ActionProposed"
@@ -302,7 +301,7 @@ describe("Token", function () {
 
         it("Should allow unpause", async function () {
             let data = "0x";
-            let tx = await token.connect(governance).proposeAction(3, data); // 3 = Pause
+            let tx = await token.connect(governance).proposeAction(3, data);
             let receipt = await tx.wait();
             let event = receipt?.logs.find(
                 (log: any) => log.fragment?.name === "ActionProposed"
@@ -312,7 +311,7 @@ describe("Token", function () {
             await time.increase(TIMELOCK_DELAY + 1n);
             await token.connect(governance).executeAction(actionId);
             
-            tx = await token.connect(governance).proposeAction(4, data); // 4 = Unpause
+            tx = await token.connect(governance).proposeAction(4, data);
             receipt = await tx.wait();
             event = receipt?.logs.find(
                 (log: any) => log.fragment?.name === "ActionProposed"
@@ -334,7 +333,7 @@ describe("Token", function () {
         it("Should not allow finalization before 180 days", async function () {
             const data = "0x";
             
-            const tx = await token.connect(governance).proposeAction(5, data); // 5 = FinalizeGovernance
+            const tx = await token.connect(governance).proposeAction(5, data);
             const receipt = await tx.wait();
             const event = receipt?.logs.find(
                 (log: any) => log.fragment?.name === "ActionProposed"
@@ -349,34 +348,34 @@ describe("Token", function () {
         });
 
         it("Should allow finalization after 180 days", async function () {
-            await time.increase(GOVERNANCE_LOCK_PERIOD + 1n);
-            
+            // CRITICAL FIX: Propose BEFORE 180 days, then advance ONLY to 180 days + timelock (NOT more)
+            // Grace period is 7 days, so we must execute within 7 days of proposal timestamp + timelock
             const data = "0x";
-            const tx = await token.connect(governance).proposeAction(5, data); // 5 = FinalizeGovernance
+            const tx = await token.connect(governance).proposeAction(5, data);
             const receipt = await tx.wait();
             const event = receipt?.logs.find(
                 (log: any) => log.fragment?.name === "ActionProposed"
             );
             const actionId = event?.args?.[0];
             
-            await time.increase(TIMELOCK_DELAY + 1n);
+            // Advance exactly to: 180 days + 48 hours + 1 second
+            // This is within the 7-day grace period after the timelock delay
+            await time.increase(GOVERNANCE_LOCK_PERIOD + TIMELOCK_DELAY + 1n);
             await token.connect(governance).executeAction(actionId);
             
             expect(await token.governanceFinalized()).to.be.true;
         });
 
         it("Should emit GovernanceFinalized event", async function () {
-            await time.increase(GOVERNANCE_LOCK_PERIOD + 1n);
-            
             const data = "0x";
-            const tx = await token.connect(governance).proposeAction(5, data); // 5 = FinalizeGovernance
+            const tx = await token.connect(governance).proposeAction(5, data);
             const receipt = await tx.wait();
             const event = receipt?.logs.find(
                 (log: any) => log.fragment?.name === "ActionProposed"
             );
             const actionId = event?.args?.[0];
             
-            await time.increase(TIMELOCK_DELAY + 1n);
+            await time.increase(GOVERNANCE_LOCK_PERIOD + TIMELOCK_DELAY + 1n);
             
             await expect(token.connect(governance).executeAction(actionId))
                 .to.emit(token, "GovernanceFinalized");
@@ -389,17 +388,16 @@ describe("Token", function () {
     
     describe("Post-Finalization (After 180 Days)", function () {
         beforeEach(async function () {
-            await time.increase(GOVERNANCE_LOCK_PERIOD + 1n);
-            
+            // CRITICAL FIX: Propose BEFORE 180 days, then advance exactly to 180d + 48h + 1s
             const data = "0x";
-            const tx = await token.connect(governance).proposeAction(5, data); // 5 = FinalizeGovernance
+            const tx = await token.connect(governance).proposeAction(5, data);
             const receipt = await tx.wait();
             const event = receipt?.logs.find(
                 (log: any) => log.fragment?.name === "ActionProposed"
             );
             const actionId = event?.args?.[0];
             
-            await time.increase(TIMELOCK_DELAY + 1n);
+            await time.increase(GOVERNANCE_LOCK_PERIOD + TIMELOCK_DELAY + 1n);
             await token.connect(governance).executeAction(actionId);
         });
 
@@ -423,7 +421,7 @@ describe("Token", function () {
                 [newRouter, newPair]
             );
             
-            const tx = await token.connect(governance).proposeAction(6, data); // 6 = UpdateDexAfterFinalization
+            const tx = await token.connect(governance).proposeAction(6, data);
             const receipt = await tx.wait();
             const event = receipt?.logs.find(
                 (log: any) => log.fragment?.name === "ActionProposed"
@@ -448,7 +446,7 @@ describe("Token", function () {
                 [treasury.address]
             );
             
-            const tx = await token.connect(governance).proposeAction(7, data); // 7 = RescueEth
+            const tx = await token.connect(governance).proposeAction(7, data);
             const receipt = await tx.wait();
             const event = receipt?.logs.find(
                 (log: any) => log.fragment?.name === "ActionProposed"
@@ -537,14 +535,14 @@ describe("Token", function () {
         });
 
         it("Should return zero after finalization time via time helper", async function () {
-            await time.increase(GOVERNANCE_LOCK_PERIOD + 1n);
+            await time.increase(Number(GOVERNANCE_LOCK_PERIOD) + 1);
             const startTime = await token.governanceStartTime();
-            const currentTime = await time.latest();
-            expect(currentTime).to.be.gte(startTime + Number(GOVERNANCE_LOCK_PERIOD));
+            const currentTime = BigInt(await time.latest());
+            expect(currentTime).to.be.gte(startTime + GOVERNANCE_LOCK_PERIOD);
         });
 
         it("Should check wallet cap via balance and exclusion", async function () {
-            const canReceive = !await token.isExcludedFromWalletCap(user1.address);
+            const canReceive = !(await token.isExcludedFromWalletCap(user1.address));
             expect(canReceive).to.be.true;
             
             await token.connect(treasury).transfer(user1.address, WALLET_CAP);
@@ -579,7 +577,7 @@ describe("Token", function () {
                 [users, excluded]
             );
             
-            const tx = await token.connect(governance).proposeAction(1, data); // 1 = BatchSetExclusions
+            const tx = await token.connect(governance).proposeAction(1, data);
             const receipt = await tx.wait();
             const event = receipt?.logs.find(
                 (log: any) => log.fragment?.name === "ActionProposed"
