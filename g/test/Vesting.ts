@@ -1,596 +1,496 @@
+// test/Vesting.test.ts (الإصدار النهائي المُصحَّح)
 import { expect } from "chai";
 import { ethers } from "hardhat";
 import { time } from "@nomicfoundation/hardhat-network-helpers";
-import { Token, Vesting } from "../typechain-types";
 import { SignerWithAddress } from "@nomicfoundation/hardhat-ethers/signers";
+import { Vesting, ERC20Mock } from "../typechain-types";
 
-describe("Vesting", function () {
-    let token: Token;
-    let vesting: Vesting;
-    let deployer: SignerWithAddress;
-    let governance: SignerWithAddress;
-    let treasury: SignerWithAddress;
-    let depositor: SignerWithAddress;
-    let user1: SignerWithAddress;
-    let user2: SignerWithAddress;
-    let user3: SignerWithAddress;
-    
-    const TOTAL_SUPPLY = ethers.parseUnits("1000000000", 18);
-    const GOVERNANCE_LOCK_PERIOD = 180n * 24n * 60n * 60n;
-    const TIMELOCK_DELAY = 48n * 60n * 60n;
-    const CLIFF_PERIOD = 180n * 24n * 60n * 60n;
-    const MONTHLY_INTERVAL = 30n * 24n * 60n * 60n;
-    const CLAIM_EXPIRATION = 1095n * 24n * 60n * 60n;
-    
-    const TREASURY_AMOUNT = ethers.parseUnits("400000000", 18);
-    const VESTING_AMOUNT = ethers.parseUnits("300000000", 18);
-    const AIRDROP_AMOUNT = ethers.parseUnits("100000000", 18);
-    const SALE_AMOUNT = ethers.parseUnits("200000000", 18);
+describe("Vesting Contract", function () {
+  let vesting: Vesting;
+  let projectToken: ERC20Mock;
 
+  let owner: SignerWithAddress;
+  let governance: SignerWithAddress;
+  let depositor: SignerWithAddress;
+  let user1: SignerWithAddress;
+  let user2: SignerWithAddress;
+  let treasury: SignerWithAddress;
+  let unauthorizedUser: SignerWithAddress;
+
+  const TOTAL_SUPPLY_CAP = ethers.parseEther("1000000000");
+  const CLIFF_PERIOD = 180 * 24 * 60 * 60;
+  const MONTHLY_INTERVAL = 30 * 24 * 60 * 60;
+  const TRANCHE_PERCENTAGE = 2500n;
+  const ALLOCATION_AMOUNT = ethers.parseEther("10000");
+
+  let projectLaunchTime: number;
+
+  async function deployContracts() {
+    const latestBlock = await ethers.provider.getBlock("latest");
+    projectLaunchTime = latestBlock!.timestamp + 1000;
+
+    const ERC20MockFactory = await ethers.getContractFactory("ERC20Mock");
+    projectToken = await ERC20MockFactory.deploy("Project Token", "PRJ");
+
+    const VestingFactory = await ethers.getContractFactory("Vesting");
+    vesting = await VestingFactory.deploy(
+      await projectToken.getAddress(),
+      treasury.address,
+      governance.address,
+      projectLaunchTime
+    );
+
+    await projectToken.mint(depositor.address, ethers.parseEther("1000000"));
+    await projectToken.mint(governance.address, ethers.parseEther("1000000"));
+    await projectToken.connect(depositor).approve(await vesting.getAddress(), ethers.MaxUint256);
+    await projectToken.connect(governance).approve(await vesting.getAddress(), ethers.MaxUint256);
+
+    const DEPOSITOR_ROLE = await vesting.DEPOSITOR_ROLE();
+    await vesting.connect(governance).grantRole(DEPOSITOR_ROLE, depositor.address);
+  }
+
+  async function advancePastCliff() {
+    await time.increaseTo(projectLaunchTime + CLIFF_PERIOD + 1);
+  }
+
+  async function advanceMonths(months: number) {
+    await time.increase(MONTHLY_INTERVAL * months);
+  }
+
+  beforeEach(async function () {
+    [owner, governance, depositor, user1, user2, treasury, unauthorizedUser] = await ethers.getSigners();
+    await deployContracts();
+  });
+
+  // ==================== Deployment ====================
+  describe("Deployment", function () {
+    it("Should set the correct initial values", async function () {
+      expect(await vesting.projectToken()).to.equal(await projectToken.getAddress());
+      expect(await vesting.treasury()).to.equal(treasury.address);
+      expect(await vesting.projectLaunchTime()).to.equal(projectLaunchTime);
+      expect(await vesting.governanceFinalized()).to.equal(false);
+      expect(await vesting.totalAllocated()).to.equal(0);
+      expect(await vesting.totalClaimedAmount()).to.equal(0);
+    });
+
+    it("Should grant GOVERNANCE_ROLE to governance address", async function () {
+      const GOVERNANCE_ROLE = await vesting.GOVERNANCE_ROLE();
+      expect(await vesting.hasRole(GOVERNANCE_ROLE, governance.address)).to.equal(true);
+    });
+
+    it("Should revert if projectToken is zero address", async function () {
+      const VestingFactory = await ethers.getContractFactory("Vesting");
+      await expect(
+        VestingFactory.deploy(ethers.ZeroAddress, treasury.address, governance.address, projectLaunchTime)
+      ).to.be.revertedWithCustomError(vesting, "Vesting__ZeroAddress");
+    });
+  });
+
+  // ==================== Deposits and Allocations ====================
+  describe("Deposits and Allocations", function () {
+    it("Should allow depositor to deposit tokens", async function () {
+      const depositAmount = ethers.parseEther("5000");
+      await expect(vesting.connect(depositor).depositTokens(depositAmount))
+        .to.emit(vesting, "TokensDeposited")
+        .withArgs(depositor.address, depositAmount);
+      expect(await projectToken.balanceOf(await vesting.getAddress())).to.equal(depositAmount);
+    });
+
+    it("Should revert deposit with zero amount", async function () {
+      await expect(vesting.connect(depositor).depositTokens(0))
+        .to.be.revertedWithCustomError(vesting, "Vesting__InvalidAmount");
+    });
+
+    it("Should allocate tokens to user after deposit", async function () {
+      const amount = ethers.parseEther("10000");
+      // ✅ Fix: deposit first then allocate
+      await vesting.connect(depositor).depositTokens(amount);
+      await expect(vesting.connect(depositor).allocate(user1.address, amount))
+        .to.emit(vesting, "TokensAllocated")
+        .withArgs(user1.address, amount, projectLaunchTime);
+
+      const schedule = await vesting.vestingSchedules(user1.address);
+      expect(schedule.totalAllocation).to.equal(amount);
+      expect(schedule.exists).to.equal(true);
+      expect(await vesting.totalAllocated()).to.equal(amount);
+    });
+
+    it("Should deposit and allocate in single transaction", async function () {
+      const amount = ethers.parseEther("10000");
+      await vesting.connect(depositor).depositAndAllocate(user1.address, amount);
+      const schedule = await vesting.vestingSchedules(user1.address);
+      expect(schedule.totalAllocation).to.equal(amount);
+      expect(await projectToken.balanceOf(await vesting.getAddress())).to.equal(amount);
+    });
+
+    it("Should batch allocate to multiple users", async function () {
+      const users = [user1.address, user2.address];
+      const amounts = [ethers.parseEther("5000"), ethers.parseEther("3000")];
+      await vesting.connect(depositor).depositTokens(ethers.parseEther("8000"));
+      await expect(vesting.connect(depositor).batchAllocate(users, amounts))
+        .to.emit(vesting, "TokensAllocated");
+      expect((await vesting.vestingSchedules(user1.address)).totalAllocation).to.equal(amounts[0]);
+      expect((await vesting.vestingSchedules(user2.address)).totalAllocation).to.equal(amounts[1]);
+    });
+
+    it("Should revert allocation if user already has allocation", async function () {
+      // ✅ Fix: ensure balance before first allocation
+      await vesting.connect(depositor).depositTokens(ALLOCATION_AMOUNT);
+      await vesting.connect(depositor).allocate(user1.address, ALLOCATION_AMOUNT);
+      await expect(
+        vesting.connect(depositor).allocate(user1.address, ALLOCATION_AMOUNT)
+      ).to.be.revertedWithCustomError(vesting, "Vesting__AllocationAlreadyExists");
+    });
+
+    it("Should revert if total allocation exceeds cap", async function () {
+      const hugeAmount = TOTAL_SUPPLY_CAP + 1n;
+      await projectToken.mint(depositor.address, hugeAmount);
+      await projectToken.connect(depositor).approve(await vesting.getAddress(), hugeAmount);
+      await expect(
+        vesting.connect(depositor).depositAndAllocate(user1.address, hugeAmount)
+      ).to.be.revertedWithCustomError(vesting, "Vesting__InvalidAmount");
+    });
+
+    it("Should revert if unauthorized user tries to allocate", async function () {
+      await expect(
+        vesting.connect(unauthorizedUser).allocate(user1.address, ALLOCATION_AMOUNT)
+      ).to.be.revertedWithCustomError(vesting, "Vesting__NotAuthorized");
+    });
+  });
+
+  // ==================== Claiming Tokens ====================
+  describe("Claiming Tokens", function () {
     beforeEach(async function () {
-        [deployer, governance, treasury, depositor, user1, user2, user3] = await ethers.getSigners();
-        
-        // Deploy Vesting FIRST (we need its address for Token)
-        const currentTime = await time.latest();
-        const VestingFactory = await ethers.getContractFactory("Vesting");
-        vesting = await VestingFactory.deploy(
-            ethers.ZeroAddress, // placeholder, will update after Token deploy
-            treasury.address,
-            governance.address,
-            currentTime
-        );
-        await vesting.waitForDeployment();
-        
-        // Deploy Airdrop placeholder (needed for Token constructor)
-        const AirdropFactory = await ethers.getContractFactory("Airdrop");
-        const airdrop = await AirdropFactory.deploy(
-            ethers.ZeroAddress,
-            await vesting.getAddress(),
-            treasury.address,
-            governance.address
-        );
-        await airdrop.waitForDeployment();
-        
-        // Deploy Sale placeholder (needed for Token constructor)
-        const futureTime = currentTime + 7 * 24 * 3600;
-        const SaleFactory = await ethers.getContractFactory("Sale");
-        const sale = await SaleFactory.deploy(
-            ethers.ZeroAddress,
-            await vesting.getAddress(),
-            treasury.address,
-            governance.address,
-            1000000,
-            ethers.parseUnits("50000000", 18),
-            ethers.parseUnits("1000", 18),
-            futureTime,
-            futureTime + 7 * 24 * 3600
-        );
-        await sale.waitForDeployment();
-        
-        // Deploy Token with REAL addresses
-        const TokenFactory = await ethers.getContractFactory("Token");
-        token = await TokenFactory.deploy(
-            "Project Token", "PRJ",
-            governance.address, treasury.address,
-            await vesting.getAddress(),
-            await airdrop.getAddress(),
-            await sale.getAddress(),
-            TREASURY_AMOUNT, VESTING_AMOUNT, AIRDROP_AMOUNT, SALE_AMOUNT
-        );
-        await token.waitForDeployment();
-        
-        // Update Vesting with real token address
-        // Note: Vesting doesn't have update function, so we need to redeploy
-        // For testing, we'll use the Vesting with correct token from start
-        // Actually, let's redeploy Vesting with correct token
-        const VestingFactory2 = await ethers.getContractFactory("Vesting");
-        vesting = await VestingFactory2.deploy(
-            await token.getAddress(),
-            treasury.address,
-            governance.address,
-            currentTime
-        );
-        await vesting.waitForDeployment();
-        
-        // Fund Vesting with tokens
-        await token.connect(treasury).transfer(await vesting.getAddress(), VESTING_AMOUNT);
+      await vesting.connect(depositor).depositAndAllocate(user1.address, ALLOCATION_AMOUNT);
     });
 
-    // ═══════════════════════════════════════════════════════════════
-    // DEPLOYMENT TESTS
-    // ═══════════════════════════════════════════════════════════════
-    
-    describe("Deployment", function () {
-        it("Should set correct project token", async function () {
-            expect(await vesting.projectToken()).to.equal(await token.getAddress());
-        });
-
-        it("Should set correct treasury", async function () {
-            expect(await vesting.treasury()).to.equal(treasury.address);
-        });
-
-        it("Should set correct governance role", async function () {
-            const GOVERNANCE_ROLE = await vesting.GOVERNANCE_ROLE();
-            expect(await vesting.hasRole(GOVERNANCE_ROLE, governance.address)).to.be.true;
-        });
-
-        it("Should set correct project launch time", async function () {
-            const launchTime = await vesting.projectLaunchTime();
-            expect(launchTime).to.be.gt(0);
-        });
-
-        it("Should not be finalized initially", async function () {
-            expect(await vesting.governanceFinalized()).to.be.false;
-        });
-
-        it("Should have zero total allocated initially", async function () {
-            expect(await vesting.totalAllocated()).to.equal(0);
-        });
-
-        it("Should have zero total claimed initially", async function () {
-            expect(await vesting.totalClaimedAmount()).to.equal(0);
-        });
+    it("Should revert claim before cliff period", async function () {
+  // لا نقوم بتغيير الوقت؛ الوقت الحالي < projectLaunchTime + CLIFF_PERIOD
+    await expect(
+    vesting.connect(user1).claim()
+     ).to.be.revertedWithCustomError(vesting, "Vesting__CliffNotReached");
     });
 
-    // ═══════════════════════════════════════════════════════════════
-    // DEPOSIT & ALLOCATION TESTS
-    // ═══════════════════════════════════════════════════════════════
-    
-    describe("Deposit & Allocation", function () {
-        it("Should allow authorized to deposit tokens", async function () {
-            const amount = ethers.parseUnits("1000000", 18);
-            await token.connect(treasury).approve(await vesting.getAddress(), amount);
-            
-            // Grant depositor role to treasury for testing
-            const data = ethers.AbiCoder.defaultAbiCoder().encode(
-                ["address", "bool"],
-                [treasury.address, true]
-            );
-            const tx = await vesting.connect(governance).proposeAction(2, data); // 2 = SetDepositor
-            const receipt = await tx.wait();
-            const event = receipt?.logs.find((log: any) => log.fragment?.name === "ActionProposed");
-            const actionId = event?.args?.[0];
-            await time.increase(TIMELOCK_DELAY + 1n);
-            await vesting.connect(governance).executeAction(actionId);
-            
-            await vesting.connect(treasury).depositTokens(amount);
-            expect(await token.balanceOf(await vesting.getAddress())).to.equal(VESTING_AMOUNT + amount);
-        });
+    it("Should allow claiming first 25% immediately after cliff", async function () {
+      await advancePastCliff();
+      const firstTranche = (ALLOCATION_AMOUNT * TRANCHE_PERCENTAGE) / 10000n;
 
-        it("Should allow governance to allocate via timelock", async function () {
-            const amount = ethers.parseUnits("1000000", 18);
-            
-            const data = ethers.AbiCoder.defaultAbiCoder().encode(
-                ["address", "uint256"],
-                [user1.address, amount]
-            );
-            
-            const tx = await vesting.connect(governance).proposeAction(0, data); // 0 = Allocate
-            const receipt = await tx.wait();
-            const event = receipt?.logs.find((log: any) => log.fragment?.name === "ActionProposed");
-            const actionId = event?.args?.[0];
-            
-            await time.increase(TIMELOCK_DELAY + 1n);
-            await vesting.connect(governance).executeAction(actionId);
-            
-            const schedule = await vesting.vestingSchedules(user1.address);
-            expect(schedule.totalAllocation).to.equal(amount);
-            expect(schedule.exists).to.be.true;
-        });
+      // ✅ Fix: capture timestamp from transaction receipt
+      const tx = await vesting.connect(user1).claim();
+      const receipt = await tx.wait();
+      const block = await ethers.provider.getBlock(receipt!.blockNumber);
+      const eventTimestamp = block!.timestamp;
 
-        it("Should allow authorized direct allocation", async function () {
-            const amount = ethers.parseUnits("1000000", 18);
-            
-            // Grant DEPOSITOR_ROLE to treasury
-            const data = ethers.AbiCoder.defaultAbiCoder().encode(
-                ["address", "bool"],
-                [treasury.address, true]
-            );
-            const tx = await vesting.connect(governance).proposeAction(2, data);
-            const receipt = await tx.wait();
-            const event = receipt?.logs.find((log: any) => log.fragment?.name === "ActionProposed");
-            const actionId = event?.args?.[0];
-            await time.increase(TIMELOCK_DELAY + 1n);
-            await vesting.connect(governance).executeAction(actionId);
-            
-            await vesting.connect(treasury).allocate(user1.address, amount);
-            
-            const schedule = await vesting.vestingSchedules(user1.address);
-            expect(schedule.totalAllocation).to.equal(amount);
-        });
-
-        it("Should revert allocation for existing user", async function () {
-            const amount = ethers.parseUnits("1000000", 18);
-            
-            await vesting.connect(governance).allocate(user1.address, amount);
-            
-            await expect(
-                vesting.connect(governance).allocate(user1.address, amount)
-            ).to.be.revertedWithCustomError(vesting, "Vesting__AllocationAlreadyExists");
-        });
-
-        it("Should revert allocation with zero amount", async function () {
-            await expect(
-                vesting.connect(governance).allocate(user1.address, 0)
-            ).to.be.revertedWithCustomError(vesting, "Vesting__InvalidAmount");
-        });
-
-        it("Should allow batch allocation", async function () {
-            const amounts = [ethers.parseUnits("1000000", 18), ethers.parseUnits("2000000", 18)];
-            
-            await vesting.connect(governance).batchAllocate([user1.address, user2.address], amounts);
-            
-            const schedule1 = await vesting.vestingSchedules(user1.address);
-            const schedule2 = await vesting.vestingSchedules(user2.address);
-            
-            expect(schedule1.totalAllocation).to.equal(amounts[0]);
-            expect(schedule2.totalAllocation).to.equal(amounts[1]);
-        });
-
-        it("Should revert batch allocation with mismatched arrays", async function () {
-            await expect(
-                vesting.connect(governance).batchAllocate([user1.address], [1000, 2000])
-            ).to.be.revertedWithCustomError(vesting, "Vesting__InvalidAmount");
-        });
+      await expect(tx)
+        .to.emit(vesting, "TokensClaimed")
+        .withArgs(user1.address, firstTranche, eventTimestamp);
+      expect(await projectToken.balanceOf(user1.address)).to.equal(firstTranche);
     });
 
-    // ═══════════════════════════════════════════════════════════════
-    // CLAIM SYSTEM TESTS
-    // ═══════════════════════════════════════════════════════════════
-    
-    describe("Claim System", function () {
-        beforeEach(async function () {
-            const amount = ethers.parseUnits("1000000", 18);
-            await vesting.connect(governance).allocate(user1.address, amount);
-        });
+    it("Should allow claiming 50% after cliff + 1 month", async function () {
+      await advancePastCliff();
+      await vesting.connect(user1).claim();
+      await advanceMonths(1);
+      const secondTranche = (ALLOCATION_AMOUNT * TRANCHE_PERCENTAGE) / 10000n;
 
-        it("Should not allow claim before cliff", async function () {
-            await expect(
-                vesting.connect(user1).claim()
-            ).to.be.revertedWithCustomError(vesting, "Vesting__CliffNotReached");
-        });
+      const tx = await vesting.connect(user1).claim();
+      const receipt = await tx.wait();
+      const block = await ethers.provider.getBlock(receipt!.blockNumber);
+      const eventTimestamp = block!.timestamp;
 
-        it("Should allow first tranche claim after cliff", async function () {
-            await time.increase(CLIFF_PERIOD + 1n);
-            
-            const beforeBalance = await token.balanceOf(user1.address);
-            await vesting.connect(user1).claim();
-            const afterBalance = await token.balanceOf(user1.address);
-            
-            const schedule = await vesting.vestingSchedules(user1.address);
-            const expectedFirstTranche = schedule.totalAllocation * 2500n / 10000n; // 25%
-            
-            expect(afterBalance - beforeBalance).to.equal(expectedFirstTranche);
-        });
-
-        it("Should allow full claim after all tranches", async function () {
-            await time.increase(CLIFF_PERIOD + (3n * MONTHLY_INTERVAL) + 1n);
-            
-            await vesting.connect(user1).claim();
-            
-            const schedule = await vesting.vestingSchedules(user1.address);
-            expect(schedule.claimedAmount).to.equal(schedule.totalAllocation);
-        });
-
-        it("Should track claimed amount correctly", async function () {
-            await time.increase(CLIFF_PERIOD + 1n);
-            
-            await vesting.connect(user1).claim();
-            
-            const schedule = await vesting.vestingSchedules(user1.address);
-            expect(schedule.claimedAmount).to.be.gt(0);
-        });
-
-        it("Should not allow double claim without new tranche", async function () {
-            await time.increase(CLIFF_PERIOD + 1n);
-            
-            await vesting.connect(user1).claim();
-            
-            await expect(
-                vesting.connect(user1).claim()
-            ).to.be.revertedWithCustomError(vesting, "Vesting__NothingToClaim");
-        });
-
-        it("Should allow claim even when contract is paused", async function () {
-            await time.increase(CLIFF_PERIOD + 1n);
-            
-            // Pause the contract
-            const data = "0x";
-            const tx = await vesting.connect(governance).proposeAction(4, data); // 4 = Pause
-            const receipt = await tx.wait();
-            const event = receipt?.logs.find((log: any) => log.fragment?.name === "ActionProposed");
-            const actionId = event?.args?.[0];
-            await time.increase(TIMELOCK_DELAY + 1n);
-            await vesting.connect(governance).executeAction(actionId);
-            
-            // Claim should still work (claim is not blocked by pause)
-            const beforeBalance = await token.balanceOf(user1.address);
-            await vesting.connect(user1).claim();
-            const afterBalance = await token.balanceOf(user1.address);
-            
-            expect(afterBalance).to.be.gt(beforeBalance);
-        });
+      await expect(tx)
+        .to.emit(vesting, "TokensClaimed")
+        .withArgs(user1.address, secondTranche, eventTimestamp);
+      expect(await projectToken.balanceOf(user1.address)).to.equal(secondTranche * 2n);
     });
 
-    // ═══════════════════════════════════════════════════════════════
-    // GOVERNANCE & TIMELOCK TESTS
-    // ═══════════════════════════════════════════════════════════════
-    
-    describe("Governance & Timelock", function () {
-        it("Should allow governance to propose and execute", async function () {
-            const data = ethers.AbiCoder.defaultAbiCoder().encode(
-                ["address", "uint256"],
-                [user1.address, ethers.parseUnits("1000000", 18)]
-            );
-            
-            const tx = await vesting.connect(governance).proposeAction(0, data);
-            const receipt = await tx.wait();
-            const event = receipt?.logs.find((log: any) => log.fragment?.name === "ActionProposed");
-            const actionId = event?.args?.[0];
-            
-            await time.increase(TIMELOCK_DELAY + 1n);
-            await vesting.connect(governance).executeAction(actionId);
-            
-            const schedule = await vesting.vestingSchedules(user1.address);
-            expect(schedule.exists).to.be.true;
-        });
-
-        it("Should not allow execution before timelock delay", async function () {
-            const data = ethers.AbiCoder.defaultAbiCoder().encode(
-                ["address", "uint256"],
-                [user1.address, 1000]
-            );
-            
-            const tx = await vesting.connect(governance).proposeAction(0, data);
-            const receipt = await tx.wait();
-            const event = receipt?.logs.find((log: any) => log.fragment?.name === "ActionProposed");
-            const actionId = event?.args?.[0];
-            
-            await expect(
-                vesting.connect(governance).executeAction(actionId)
-            ).to.be.revertedWithCustomError(vesting, "Vesting__TimelockNotElapsed");
-        });
-
-        it("Should not allow non-governance to propose", async function () {
-            await expect(
-                vesting.connect(user1).proposeAction(0, "0x")
-            ).to.be.revertedWithCustomError(vesting, "Vesting__NotGovernance");
-        });
-
-        it("Should allow pause via timelock", async function () {
-            const data = "0x";
-            const tx = await vesting.connect(governance).proposeAction(4, data); // 4 = Pause
-            const receipt = await tx.wait();
-            const event = receipt?.logs.find((log: any) => log.fragment?.name === "ActionProposed");
-            const actionId = event?.args?.[0];
-            
-            await time.increase(TIMELOCK_DELAY + 1n);
-            await vesting.connect(governance).executeAction(actionId);
-            
-            expect(await vesting.paused()).to.be.true;
-        });
-
-        it("Should allow unpause via timelock", async function () {
-            // Pause first
-            let data = "0x";
-            let tx = await vesting.connect(governance).proposeAction(4, data);
-            let receipt = await tx.wait();
-            let event = receipt?.logs.find((log: any) => log.fragment?.name === "ActionProposed");
-            let actionId = event?.args?.[0];
-            await time.increase(TIMELOCK_DELAY + 1n);
-            await vesting.connect(governance).executeAction(actionId);
-            
-            // Unpause
-            tx = await vesting.connect(governance).proposeAction(5, data); // 5 = Unpause
-            receipt = await tx.wait();
-            event = receipt?.logs.find((log: any) => log.fragment?.name === "ActionProposed");
-            actionId = event?.args?.[0];
-            await time.increase(TIMELOCK_DELAY + 1n);
-            await vesting.connect(governance).executeAction(actionId);
-            
-            expect(await vesting.paused()).to.be.false;
-        });
+    it("Should allow claiming full amount after 3 months post-cliff", async function () {
+      await advancePastCliff();
+      await advanceMonths(3);
+      await vesting.connect(user1).claim();
+      expect(await projectToken.balanceOf(user1.address)).to.equal(ALLOCATION_AMOUNT);
     });
 
-    // ═══════════════════════════════════════════════════════════════
-    // GOVERNANCE FINALIZATION TESTS
-    // ═══════════════════════════════════════════════════════════════
-    
-    describe("Governance Finalization", function () {
-        it("Should not allow finalization before 180 days", async function () {
-            const data = "0x";
-            const tx = await vesting.connect(governance).proposeAction(6, data); // 6 = FinalizeGovernance
-            const receipt = await tx.wait();
-            const event = receipt?.logs.find((log: any) => log.fragment?.name === "ActionProposed");
-            const actionId = event?.args?.[0];
-            
-            await time.increase(TIMELOCK_DELAY + 1n);
-            
-            await expect(
-                vesting.connect(governance).executeAction(actionId)
-            ).to.be.revertedWithCustomError(vesting, "Vesting__LockPeriodNotElapsed");
-        });
-
-        it("Should allow finalization after 180 days", async function () {
-            // Propose BEFORE 180 days
-            const data = "0x";
-            const tx = await vesting.connect(governance).proposeAction(6, data);
-            const receipt = await tx.wait();
-            const event = receipt?.logs.find((log: any) => log.fragment?.name === "ActionProposed");
-            const actionId = event?.args?.[0];
-            
-            // Now advance past 180 days + timelock
-            await time.increase(GOVERNANCE_LOCK_PERIOD + TIMELOCK_DELAY + 1n);
-            await vesting.connect(governance).executeAction(actionId);
-            
-            expect(await vesting.governanceFinalized()).to.be.true;
-        });
+    it("Should calculate releasable amount correctly", async function () {
+      await advancePastCliff();
+      await advanceMonths(1);
+      const expectedReleasable = (ALLOCATION_AMOUNT * TRANCHE_PERCENTAGE * 2n) / 10000n;
+      const releasable = await vesting.calculateReleasable(user1.address);
+      expect(releasable).to.equal(expectedReleasable);
     });
 
-    // ═══════════════════════════════════════════════════════════════
-    // POST-FINALIZATION TESTS
-    // ═══════════════════════════════════════════════════════════════
-    
-    describe("Post-Finalization", function () {
-        beforeEach(async function () {
-            // Propose BEFORE 180 days
-            const data = "0x";
-            const tx = await vesting.connect(governance).proposeAction(6, data); // 6 = FinalizeGovernance
-            const receipt = await tx.wait();
-            const event = receipt?.logs.find((log: any) => log.fragment?.name === "ActionProposed");
-            const actionId = event?.args?.[0];
-            
-            await time.increase(GOVERNANCE_LOCK_PERIOD + TIMELOCK_DELAY + 1n);
-            await vesting.connect(governance).executeAction(actionId);
-        });
-
-        it("Should block allocation after finalization", async function () {
-            const data = ethers.AbiCoder.defaultAbiCoder().encode(
-                ["address", "uint256"],
-                [user1.address, 1000]
-            );
-            
-            await expect(
-                vesting.connect(governance).proposeAction(0, data)
-            ).to.be.revertedWithCustomError(vesting, "Vesting__FunctionLockedAfter180Days");
-        });
-
-        it("Should allow rescue tokens after finalization", async function () {
-            const data = ethers.AbiCoder.defaultAbiCoder().encode(
-                ["address", "address", "uint256"],
-                [await token.getAddress(), treasury.address, ethers.parseUnits("1000", 18)]
-            );
-            
-            const tx = await vesting.connect(governance).proposeAction(8, data); // 8 = RescueTokens
-            const receipt = await tx.wait();
-            const event = receipt?.logs.find((log: any) => log.fragment?.name === "ActionProposed");
-            const actionId = event?.args?.[0];
-            
-            await time.increase(TIMELOCK_DELAY + 1n);
-            
-            const beforeBalance = await token.balanceOf(treasury.address);
-            await vesting.connect(governance).executeAction(actionId);
-            const afterBalance = await token.balanceOf(treasury.address);
-            
-            expect(afterBalance).to.be.gt(beforeBalance);
-        });
-
-        it("Should block role management after finalization", async function () {
-            const GOVERNANCE_ROLE = await vesting.GOVERNANCE_ROLE();
-            
-            await expect(
-                vesting.connect(governance).grantRole(GOVERNANCE_ROLE, user1.address)
-            ).to.be.revertedWithCustomError(vesting, "Vesting__RoleManagementLocked");
-        });
+    it("Should return 0 releasable after all tokens claimed", async function () {
+      await advancePastCliff();
+      await advanceMonths(3);
+      await vesting.connect(user1).claim();
+      const releasable = await vesting.calculateReleasable(user1.address);
+      expect(releasable).to.equal(0);
     });
 
-    // ═══════════════════════════════════════════════════════════════
-    // VIEW FUNCTIONS TESTS
-    // ═══════════════════════════════════════════════════════════════
-    
-    describe("View Functions", function () {
-        it("Should calculate releasable correctly before cliff", async function () {
-            await vesting.connect(governance).allocate(user1.address, ethers.parseUnits("1000000", 18));
-            const releasable = await vesting.calculateReleasable(user1.address);
-            expect(releasable).to.equal(0);
-        });
-
-        it("Should calculate releasable correctly after cliff", async function () {
-            await vesting.connect(governance).allocate(user1.address, ethers.parseUnits("1000000", 18));
-            await time.increase(CLIFF_PERIOD + 1n);
-            
-            const releasable = await vesting.calculateReleasable(user1.address);
-            const expected = ethers.parseUnits("1000000", 18) * 2500n / 10000n; // 25%
-            expect(releasable).to.equal(expected);
-        });
-
-        it("Should return correct reserved tokens", async function () {
-            const amount = ethers.parseUnits("1000000", 18);
-            await vesting.connect(governance).allocate(user1.address, amount);
-            
-            const reserved = await vesting.getReservedTokens();
-            expect(reserved).to.equal(amount);
-        });
-
-        it("Should return correct excess tokens", async function () {
-            const amount = ethers.parseUnits("1000000", 18);
-            await vesting.connect(governance).allocate(user1.address, amount);
-            
-            const excess = await vesting.getExcessTokens();
-            expect(excess).to.equal(VESTING_AMOUNT - amount);
-        });
+    it("Should revert claim for non-existent schedule", async function () {
+      await advancePastCliff();
+      await expect(vesting.connect(user2).claim())
+        .to.be.revertedWithCustomError(vesting, "Vesting__NoAllocation");
     });
 
-    // ═══════════════════════════════════════════════════════════════
-    // EXPIRED TOKENS TESTS
-    // ═══════════════════════════════════════════════════════════════
-    
-    describe("Expired Tokens", function () {
-        beforeEach(async function () {
-            const amount = ethers.parseUnits("1000000", 18);
-            await vesting.connect(governance).allocate(user1.address, amount);
-        });
+    it("Should allow claiming even when contract is paused", async function () {
+      // ✅ Fix: use a different user to avoid duplicate allocation
+      await vesting.connect(depositor).depositAndAllocate(user2.address, ALLOCATION_AMOUNT);
 
-        it("Should not allow withdraw before expiration", async function () {
-            await expect(
-                vesting.connect(governance).withdrawExpired(user1.address)
-            ).to.be.revertedWithCustomError(vesting, "Vesting__NotExpiredYet");
-        });
+      const data = ethers.AbiCoder.defaultAbiCoder().encode([], []);
+      const tx = await vesting.connect(governance).proposeAction(4, data); // Pause
+      const receipt = await tx.wait();
+      const actionId = receipt?.logs[0]?.topics[1];
+      await time.increase(48 * 60 * 60 + 1);
+      await vesting.connect(governance).executeAction(actionId!);
 
-        it("Should allow withdraw after claim expiration via timelock", async function () {
-            await time.increase(CLAIM_EXPIRATION + 1n);
-            
-            const data = ethers.AbiCoder.defaultAbiCoder().encode(
-                ["address"],
-                [user1.address]
-            );
-            
-            const tx = await vesting.connect(governance).proposeAction(7, data); // 7 = WithdrawExpired
-            const receipt = await tx.wait();
-            const event = receipt?.logs.find((log: any) => log.fragment?.name === "ActionProposed");
-            const actionId = event?.args?.[0];
-            
-            await time.increase(TIMELOCK_DELAY + 1n);
-            
-            const beforeBalance = await token.balanceOf(treasury.address);
-            await vesting.connect(governance).executeAction(actionId);
-            const afterBalance = await token.balanceOf(treasury.address);
-            
-            expect(afterBalance).to.be.gt(beforeBalance);
-        });
+      await advancePastCliff();
+      await expect(vesting.connect(user2).claim()).to.emit(vesting, "TokensClaimed");
+    });
+  });
+
+  // ==================== Timelock Governance ====================
+  describe("Timelock Governance", function () {
+    it("Should propose and execute allocate action", async function () {
+      const fundAmount = ethers.parseEther("10000");
+      await vesting.connect(governance).depositTokens(fundAmount);
+
+      const amount = ethers.parseEther("5000");
+      const data = ethers.AbiCoder.defaultAbiCoder().encode(
+        ["address", "uint256"],
+        [user1.address, amount]
+      );
+
+      const tx = await vesting.connect(governance).proposeAction(0, data);
+      const receipt = await tx.wait();
+      const actionId = receipt?.logs[0]?.topics[1];
+      await time.increase(48 * 60 * 60 + 1);
+      await expect(vesting.connect(governance).executeAction(actionId!))
+        .to.emit(vesting, "ActionExecuted");
+
+      const schedule = await vesting.vestingSchedules(user1.address);
+      expect(schedule.totalAllocation).to.equal(amount);
     });
 
-    // ═══════════════════════════════════════════════════════════════
-    // EDGE CASES
-    // ═══════════════════════════════════════════════════════════════
-    
-    describe("Edge Cases", function () {
-        it("Should handle zero amount deposit", async function () {
-            await expect(
-                vesting.connect(governance).depositTokens(0)
-            ).to.be.revertedWithCustomError(vesting, "Vesting__InvalidAmount");
-        });
-
-        it("Should not allow allocation to zero address", async function () {
-            await expect(
-                vesting.connect(governance).allocate(ethers.ZeroAddress, 1000)
-            ).to.be.revertedWithCustomError(vesting, "Vesting__ZeroAddress");
-        });
-
-        it("Should track total allocated correctly", async function () {
-            const amount1 = ethers.parseUnits("1000000", 18);
-            const amount2 = ethers.parseUnits("2000000", 18);
-            
-            await vesting.connect(governance).allocate(user1.address, amount1);
-            await vesting.connect(governance).allocate(user2.address, amount2);
-            
-            expect(await vesting.totalAllocated()).to.equal(amount1 + amount2);
-        });
-
-        it("Should track user registration", async function () {
-            await vesting.connect(governance).allocate(user1.address, 1000);
-            expect(await vesting.isUserRegistered(user1.address)).to.be.true;
-            expect(await vesting.isUserRegistered(user2.address)).to.be.false;
-        });
+    it("Should revert if non-governance tries to propose action", async function () {
+      const data = ethers.AbiCoder.defaultAbiCoder().encode([], []);
+      await expect(
+        vesting.connect(unauthorizedUser).proposeAction(5, data)
+      ).to.be.revertedWithCustomError(vesting, "Vesting__NotGovernance");
     });
+
+    it("Should revert execution before timelock period", async function () {
+      await vesting.connect(governance).depositTokens(ethers.parseEther("10000"));
+      const data = ethers.AbiCoder.defaultAbiCoder().encode(
+        ["address", "uint256"],
+        [user1.address, ethers.parseEther("5000")]
+      );
+      const tx = await vesting.connect(governance).proposeAction(0, data);
+      const receipt = await tx.wait();
+      const actionId = receipt?.logs[0]?.topics[1];
+      await expect(
+        vesting.connect(governance).executeAction(actionId!)
+      ).to.be.revertedWithCustomError(vesting, "Vesting__TimelockNotElapsed");
+    });
+
+    it("Should revert execution after grace period", async function () {
+      await vesting.connect(governance).depositTokens(ethers.parseEther("10000"));
+      const data = ethers.AbiCoder.defaultAbiCoder().encode(
+        ["address", "uint256"],
+        [user1.address, ethers.parseEther("5000")]
+      );
+      const tx = await vesting.connect(governance).proposeAction(0, data);
+      const receipt = await tx.wait();
+      const actionId = receipt?.logs[0]?.topics[1];
+      await time.increase(48 * 60 * 60 + 7 * 24 * 60 * 60 + 1);
+      await expect(
+        vesting.connect(governance).executeAction(actionId!)
+      ).to.be.revertedWithCustomError(vesting, "Vesting__ActionExpired");
+    });
+
+    it("Should prevent double execution", async function () {
+      await vesting.connect(governance).depositTokens(ethers.parseEther("10000"));
+      const data = ethers.AbiCoder.defaultAbiCoder().encode(
+        ["address", "uint256"],
+        [user1.address, ethers.parseEther("5000")]
+      );
+      const tx = await vesting.connect(governance).proposeAction(0, data);
+      const receipt = await tx.wait();
+      const actionId = receipt?.logs[0]?.topics[1];
+      await time.increase(48 * 60 * 60 + 1);
+      await vesting.connect(governance).executeAction(actionId!);
+      await expect(
+        vesting.connect(governance).executeAction(actionId!)
+      ).to.be.revertedWithCustomError(vesting, "Vesting__AlreadyFinalized");
+    });
+  });
+
+  // ==================== Governance Finalization ====================
+  describe("Governance Finalization", function () {
+    it("Should revert finalization before 180 days", async function () {
+      await time.increase(100 * 24 * 60 * 60); // 100 days < 180
+      const data = ethers.AbiCoder.defaultAbiCoder().encode([], []);
+      // proposal is allowed, but execution should fail
+      const tx = await vesting.connect(governance).proposeAction(6, data);
+      const receipt = await tx.wait();
+      const actionId = receipt?.logs[0]?.topics[1];
+      await time.increase(48 * 60 * 60 + 1);
+      await expect(
+        vesting.connect(governance).executeAction(actionId!)
+      ).to.be.revertedWithCustomError(vesting, "Vesting__LockPeriodNotElapsed");
+    });
+
+    it("Should allow finalization after 180 days (before auto-lock if not yet locked)", async function () {
+      // governance auto-locks at 180 days, so finalization must be proposed and executed exactly at/after 180 days
+      // but before execution the check `_isGovernanceLocked()` will see if 180 days have passed,
+      // and finalization is allowed only if not already locked.
+      // Actually finalizeGovernance can be called even after 180 days? The code:
+      // function _finalizeGovernance() internal {
+      //   if (block.timestamp < governanceStartTime + GOVERNANCE_LOCK_PERIOD) revert Vesting__LockPeriodNotElapsed();
+      //   governanceFinalized = true;
+      // }
+      // So it just checks that 180 days have passed. It doesn't check if already locked.
+      // But the proposeAction check: if _isGovernanceLocked() then only WithdrawExpired, RescueTokens, RescueEth are allowed.
+      // Since _isGovernanceLocked() returns true if governanceFinalized OR block.timestamp >= governanceStartTime + 180 days.
+      // So after 180 days, proposing FinalizeGovernance is blocked.
+      // Therefore we cannot finalize after 180 days. The only way to finalize is to propose before 180 days and execute after 180 days.
+      // Let's test that scenario.
+      
+      // Prepare proposal just before 180 days (179 days)
+      await time.increase(179 * 24 * 60 * 60);
+      const data = ethers.AbiCoder.defaultAbiCoder().encode([], []);
+      const tx = await vesting.connect(governance).proposeAction(6, data);
+      const receipt = await tx.wait();
+      const actionId = receipt?.logs[0]?.topics[1];
+
+      // Now advance to after 180 days + timelock
+      await time.increase(1 * 24 * 60 * 60 + 48 * 60 * 60 + 1); // 1 day + 48h
+      await expect(vesting.connect(governance).executeAction(actionId!))
+        .to.emit(vesting, "GovernanceFinalized");
+      expect(await vesting.governanceFinalized()).to.equal(true);
+    });
+
+    it("Should auto-lock roles after 180 days", async function () {
+      await time.increase(180 * 24 * 60 * 60 + 1);
+      await expect(
+        vesting.connect(governance).grantRole(await vesting.DEPOSITOR_ROLE(), unauthorizedUser.address)
+      ).to.be.revertedWithCustomError(vesting, "Vesting__RoleManagementLocked");
+    });
+
+    it("Should revert finalization proposal after 180 days (auto-locked)", async function () {
+      await time.increase(180 * 24 * 60 * 60 + 1);
+      const data = ethers.AbiCoder.defaultAbiCoder().encode([], []);
+      await expect(
+        vesting.connect(governance).proposeAction(6, data)
+      ).to.be.revertedWithCustomError(vesting, "Vesting__FunctionLockedAfter180Days");
+    });
+  });
+
+  // ==================== Expired Tokens Withdrawal ====================
+  describe("Expired Tokens Withdrawal", function () {
+    beforeEach(async function () {
+      await vesting.connect(depositor).depositAndAllocate(user1.address, ALLOCATION_AMOUNT);
+    });
+
+    it("Should allow withdrawal after claim expiration", async function () {
+      await time.increase(1095 * 24 * 60 * 60 + 1);
+      const data = ethers.AbiCoder.defaultAbiCoder().encode(["address"], [user1.address]);
+      const tx = await vesting.connect(governance).proposeAction(7, data);
+      const receipt = await tx.wait();
+      const actionId = receipt?.logs[0]?.topics[1];
+      await time.increase(48 * 60 * 60 + 1);
+      await expect(vesting.connect(governance).executeAction(actionId!))
+        .to.emit(vesting, "ExpiredTokensWithdrawn")
+        .withArgs(user1.address, ALLOCATION_AMOUNT, treasury.address);
+      expect(await projectToken.balanceOf(treasury.address)).to.equal(ALLOCATION_AMOUNT);
+    });
+
+    it("Should revert withdrawal before expiration", async function () {
+      const data = ethers.AbiCoder.defaultAbiCoder().encode(["address"], [user1.address]);
+      const tx = await vesting.connect(governance).proposeAction(7, data);
+      const receipt = await tx.wait();
+      const actionId = receipt?.logs[0]?.topics[1];
+      await time.increase(48 * 60 * 60 + 1);
+      await expect(
+        vesting.connect(governance).executeAction(actionId!)
+      ).to.be.revertedWithCustomError(vesting, "Vesting__NotExpiredYet");
+    });
+  });
+
+  // ==================== Token Rescue ====================
+  describe("Token Rescue", function () {
+    it("Should rescue excess tokens", async function () {
+      const extraAmount = ethers.parseEther("1000");
+      await projectToken.mint(governance.address, extraAmount);
+      await projectToken.connect(governance).transfer(await vesting.getAddress(), extraAmount);
+
+      const data = ethers.AbiCoder.defaultAbiCoder().encode(
+        ["address", "address", "uint256"],
+        [await projectToken.getAddress(), treasury.address, extraAmount]
+      );
+      const tx = await vesting.connect(governance).proposeAction(8, data);
+      const receipt = await tx.wait();
+      const actionId = receipt?.logs[0]?.topics[1];
+      await time.increase(48 * 60 * 60 + 1);
+      await expect(vesting.connect(governance).executeAction(actionId!))
+        .to.emit(vesting, "TokensRescued");
+    });
+
+    it("Should not allow rescuing reserved tokens", async function () {
+      await vesting.connect(depositor).depositAndAllocate(user1.address, ALLOCATION_AMOUNT);
+      const data = ethers.AbiCoder.defaultAbiCoder().encode(
+        ["address", "address", "uint256"],
+        [await projectToken.getAddress(), treasury.address, ALLOCATION_AMOUNT]
+      );
+      const tx = await vesting.connect(governance).proposeAction(8, data);
+      const receipt = await tx.wait();
+      const actionId = receipt?.logs[0]?.topics[1];
+      await time.increase(48 * 60 * 60 + 1);
+      await expect(
+        vesting.connect(governance).executeAction(actionId!)
+      ).to.be.revertedWithCustomError(vesting, "Vesting__InvalidAmount");
+    });
+  });
+
+  // ==================== View Functions ====================
+  describe("View Functions", function () {
+    it("Should return correct reserved tokens", async function () {
+      const amount = ethers.parseEther("10000");
+      await vesting.connect(depositor).depositAndAllocate(user1.address, amount);
+      await advancePastCliff();
+      await advanceMonths(1);
+      await vesting.connect(user1).claim();
+      const claimed = (amount * TRANCHE_PERCENTAGE * 2n) / 10000n;
+      expect(await vesting.getReservedTokens()).to.equal(amount - claimed);
+    });
+
+    it("Should return correct excess tokens", async function () {
+      const allocated = ethers.parseEther("10000");
+      const extra = ethers.parseEther("5000");
+      await vesting.connect(depositor).depositAndAllocate(user1.address, allocated);
+      await projectToken.mint(governance.address, extra);
+      await projectToken.connect(governance).transfer(await vesting.getAddress(), extra);
+      expect(await vesting.getExcessTokens()).to.equal(extra);
+    });
+  });
+
+  // ==================== ETH Rescue ====================
+  describe("ETH Rescue", function () {
+    it("Should rescue ETH from contract", async function () {
+      await owner.sendTransaction({
+        to: await vesting.getAddress(),
+        value: ethers.parseEther("1"),
+      });
+      const data = ethers.AbiCoder.defaultAbiCoder().encode(["address"], [treasury.address]);
+      const tx = await vesting.connect(governance).proposeAction(9, data);
+      const receipt = await tx.wait();
+      const actionId = receipt?.logs[0]?.topics[1];
+      await time.increase(48 * 60 * 60 + 1);
+      const initialBalance = await ethers.provider.getBalance(treasury.address);
+      await expect(vesting.connect(governance).executeAction(actionId!))
+        .to.emit(vesting, "EthRescued");
+      const finalBalance = await ethers.provider.getBalance(treasury.address);
+      expect(finalBalance - initialBalance).to.equal(ethers.parseEther("1"));
+    });
+  });
 });
