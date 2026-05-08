@@ -528,14 +528,14 @@ contract Sale is AccessControl, ReentrancyGuard, Pausable {
     // ═══════════════════════════════════════════════════════════════
     function _updateTreasury(address _newTreasury) internal {
         if (_newTreasury == address(0)) revert Sale__ZeroAddress();
-        if (_newTreasury.code.length == 0) revert Airdrop__ZeroAddress();
+        if (_newTreasury.code.length == 0) revert Sale__ZeroAddress();
         treasury = _newTreasury;
         emit TreasuryUpdated(_newTreasury);
     }
 
     function _updateVesting(address _newVesting) internal {
         if (_newVesting == address(0)) revert Sale__ZeroAddress();
-        if (_newVesting.code.length == 0) revert Airdrop__ZeroAddress();
+        if (_newVesting.code.length == 0) revert Sale__ZeroAddress();
         vestingContract = IVesting(_newVesting);
         emit VestingUpdated(_newVesting);
     }

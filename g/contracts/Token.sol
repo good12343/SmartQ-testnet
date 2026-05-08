@@ -17,7 +17,7 @@ import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {ERC20Permit} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Permit.sol";
 import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import {Pausable} from "@openzeppelin/contracts/security/Pausable.sol";
+import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 
 contract Token is ERC20, ERC20Permit, AccessControl, ReentrancyGuard, Pausable {
     
