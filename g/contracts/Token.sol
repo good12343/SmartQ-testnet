@@ -16,7 +16,7 @@ pragma solidity ^0.8.20;
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {ERC20Permit} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Permit.sol";
 import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
-import {ReentrancyGuard} from "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Pausable} from "@openzeppelin/contracts/security/Pausable.sol";
 
 contract Token is ERC20, ERC20Permit, AccessControl, ReentrancyGuard, Pausable {
@@ -258,12 +258,15 @@ contract Token is ERC20, ERC20Permit, AccessControl, ReentrancyGuard, Pausable {
         emit DexSetupUpdated(_router, _pair);
     }
 
-    function _finalizeGovernance() internal {
+    function _isGovernanceLocked() internal view returns (bool) {
+    return governanceFinalized || block.timestamp >= governanceStartTime + GOVERNANCE_LOCK_PERIOD;
+    }
+
+      function _finalizeGovernance() internal {
         if (block.timestamp < governanceStartTime + GOVERNANCE_LOCK_PERIOD) revert Token__LockPeriodNotElapsed();
         governanceFinalized = true;
         emit GovernanceFinalized(block.timestamp);
     }
-
     function _rescueEth(address payable _to) internal {
         uint256 balance = address(this).balance;
         if (balance == 0) revert Token__NoEthToRescue();
@@ -303,7 +306,7 @@ contract Token is ERC20, ERC20Permit, AccessControl, ReentrancyGuard, Pausable {
      * @dev Prevents role changes after governance is finalized.
      */
     function grantRole(bytes32 role, address account) public override onlyGovernance {
-        if (governanceFinalized) revert Token__RoleManagementLocked();
+        if (_isGovernanceLocked()) revert Token__RoleManagementLocked();
         super.grantRole(role, account);
     }
 
@@ -311,7 +314,7 @@ contract Token is ERC20, ERC20Permit, AccessControl, ReentrancyGuard, Pausable {
      * @dev Prevents role changes after governance is finalized.
      */
     function revokeRole(bytes32 role, address account) public override onlyGovernance {
-        if (governanceFinalized) revert Token__RoleManagementLocked();
+        if (_isGovernanceLocked()) revert Token__RoleManagementLocked();
         super.revokeRole(role, account);
     }
 
@@ -319,7 +322,7 @@ contract Token is ERC20, ERC20Permit, AccessControl, ReentrancyGuard, Pausable {
      * @dev Prevents role changes after governance is finalized.
      */
     function renounceRole(bytes32 role, address account) public override {
-        if (governanceFinalized) revert Token__RoleManagementLocked();
+        if (_isGovernanceLocked()) revert Token__RoleManagementLocked();
         super.renounceRole(role, account);
     }
 
