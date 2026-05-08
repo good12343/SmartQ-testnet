@@ -49,7 +49,8 @@ contract Token is ERC20, ERC20Permit, AccessControl, ReentrancyGuard, Pausable {
     uint256 public constant WALLET_CAP = 10_000_000 * 10**18;
     uint256 public constant GOVERNANCE_LOCK_PERIOD = 180 days;
     uint256 public constant TIMELOCK_DELAY = 48 hours;
-    uint256 public constant TIMELOCK_GRACE_PERIOD = 180 days + 48 hours;
+    uint256 public constant TIMELOCK_GRACE_PERIOD = 7 days;
+
 
     // ═══════════════════════════════════════════════════════════════
     // TIMELOCK LOGIC
