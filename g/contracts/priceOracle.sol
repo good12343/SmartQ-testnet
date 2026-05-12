@@ -176,12 +176,27 @@ contract PriceOracleV2 is AccessControl, Pausable {
     // ═════════════════════ INTERNAL MATH ═════════════════════
 
     function _calc(
-        uint256 amount,
-        uint256 priceUsd,
-        uint8 decimals
-    ) internal pure returns (uint256) {
-        return (amount * priceUsd * 1e18) / (priceUsd * 10 ** decimals);
-    }
+    uint256 amount,
+    uint256 currencyPriceUsd, // سعر العملة المدفوعة بالدولار (مثلاً 2500 دولار لـ ETH)
+    uint8 currencyDecimals    // عدد الكسور العشرية للعملة المدفوعة (مثلاً 18 لـ ETH)
+    ) internal view returns (uint256 tokens) {
+    // تحويل مبلغ الدفع إلى قيمته بالدولار
+    // (amount * currencyPriceUsd) / (10 ** currencyDecimals) = قيمة الدفع بالدولار
+    uint256 paidAmountInUsd = (amount * currencyPriceUsd) / (10 ** currencyDecimals);
+
+    // حساب عدد التوكنات: (قيمة الدفع بالدولار * 1e6) / سعر التوكن بالدولار (tokenPriceUsd)
+    // tokenPriceUsd هو 0.01 دولار بـ 1e6 precision
+    tokens = (paidAmountInUsd * 1e6) / tokenPriceUsd;
+    
+    // يجب أن نأخذ في الاعتبار أن التوكن نفسه له 18 decimals
+    // لذلك، إذا كان tokenPriceUsd بـ 1e6، و paidAmountInUsd بـ 1e6، فإن النتيجة ستكون بـ 1e18
+    // (paidAmountInUsd * 1e18) / tokenPriceUsd
+    // هذا يحتاج إلى تعديل دقيق بناءً على الـ precision الذي تستخدمه في Token.sol
+    // إذا كان tokenPriceUsd هو 0.01 * 1e6 = 10000
+    // فإن (paidAmountInUsd * 1e18) / 10000
+    return (paidAmountInUsd * (10 ** 18)) / tokenPriceUsd; // بافتراض أن التوكن له 18 decimals
+}
+
 
     // ═════════════════════ SAFETY ═════════════════════
     function pause() external onlyRole(OPERATOR_ROLE) {

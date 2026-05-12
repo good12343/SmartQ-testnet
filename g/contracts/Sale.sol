@@ -100,30 +100,31 @@ contract Sale is AccessControl, ReentrancyGuard, Pausable {
 
     // ───── CORE ─────
     function _buy(address currency, uint256 amount) internal {
-        if (block.timestamp < saleStart || block.timestamp > saleEnd) {
-            revert Sale__NotActive();
-        }
+    if (block.timestamp < saleStart || block.timestamp > saleEnd) {
+        revert Sale__NotActive();
+    }
 
-        uint256 tokens = priceOracle.quote(currency, amount);
+    // جلب عدد التوكنات مباشرة من PriceOracle
+    uint256 tokensToAllocate = priceOracle.quote(currency, amount);
 
-        if (!ok) revert Sale__CurrencyNotSupported();
+    // جلب معلومات العملة للتحقق من الدعم
+    (bool supported, , ) = priceOracle.getCurrency(currency);
+    if (!supported) revert Sale__CurrencyNotSupported();
 
-        uint256 tokens = _calc(amount, priceUsd, decimals);
+    if (tokensToAllocate < minPurchase) revert Sale__BelowMinPurchase();
+    if (bought[msg.sender] + tokensToAllocate > walletCap) revert Sale__ExceedsWalletCap();
+    if (totalSold + tokensToAllocate > saleCap) revert Sale__ExceedsSaleCap();
+    if (block.timestamp < lastBuy[msg.sender] + cooldown) revert Sale__Cooldown();
 
-        if (tokens < minPurchase) revert Sale__BelowMinPurchase();
-        if (bought[msg.sender] + tokens > walletCap) revert Sale__ExceedsWalletCap();
-        if (totalSold + tokens > saleCap) revert Sale__ExceedsSaleCap();
-        if (block.timestamp < lastBuy[msg.sender] + cooldown) revert Sale__Cooldown();
+    if (tokensToAllocate > _availableVesting()) revert Sale__InsufficientVesting();
 
-        if (tokens > _availableVesting()) revert Sale__InsufficientVesting();
+    vesting.allocate(msg.sender, tokensToAllocate);
 
-        vesting.allocate(msg.sender, tokens);
+    bought[msg.sender] += tokensToAllocate;
+    totalSold += tokensToAllocate;
+    lastBuy[msg.sender] = block.timestamp;
 
-        bought[msg.sender] += tokens;
-        totalSold += tokens;
-        lastBuy[msg.sender] = block.timestamp;
-
-        emit Purchased(msg.sender, currency, amount, tokens);
+    emit Purchased(msg.sender, currency, amount, tokensToAllocate);
     }
 
     // ───── MATH ─────
