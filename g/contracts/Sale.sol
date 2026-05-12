@@ -104,8 +104,7 @@ contract Sale is AccessControl, ReentrancyGuard, Pausable {
             revert Sale__NotActive();
         }
 
-        (bool ok, uint8 decimals, uint256 priceUsd) =
-            priceOracle.getCurrency(currency);
+        uint256 tokens = priceOracle.quote(currency, amount);
 
         if (!ok) revert Sale__CurrencyNotSupported();
 
