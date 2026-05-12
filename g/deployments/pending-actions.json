@@ -1,0 +1,50 @@
+{
+  "actions": [
+    {
+      "label": "استثناء Vesting",
+      "contractAddress": "0x6D08b0185d99cfdDD82D04BFca02D56b5C473A47",
+      "actionType": 0,
+      "actionId": "0x61fed3189de9b9dff60e250b84ec5f54f99016038f95c129aa3c19cb10c6fa04",
+      "meta": {
+        "contract": "Token"
+      }
+    },
+    {
+      "label": "منح DEPOSITOR لـ Sale",
+      "contractAddress": "0x59Df6f1f73b37571edeebF132D0aDB2765508E0c",
+      "actionType": 2,
+      "actionId": "0xd4fbf757223fb119f36fc446dfe79874a51f44a58688d84134117eb7e603d2f7",
+      "meta": {
+        "contract": "Vesting"
+      }
+    },
+    {
+      "label": "منح DEPOSITOR لـ Airdrop",
+      "contractAddress": "0x59Df6f1f73b37571edeebF132D0aDB2765508E0c",
+      "actionType": 2,
+      "actionId": "0x557541cbce88f9fe64cc438c442346ae9d4942c029ea45a2bcf40c2b4c01fa1f",
+      "meta": {
+        "contract": "Vesting"
+      }
+    },
+    {
+      "label": "بدء البيع",
+      "contractAddress": "0x90F77C253ac66Be9B5Bc3f243754182b19bD4AE6",
+      "actionType": 0,
+      "actionId": "0xe189acf71928bc0efa6d8ebdb67e7c8b3b0b99e3e84f9cdd76d1d66fb2e8e76a",
+      "meta": {
+        "contract": "Sale"
+      }
+    },
+    {
+      "label": "ضبط Merkle Root",
+      "contractAddress": "0xCF9dC339E847602566fEd61E55A89A6aE909454a",
+      "actionType": 0,
+      "actionId": "0x546cdcd629c9acd73f95a879828daabb103d9ba878182d81e9ce70b83c61c81e",
+      "meta": {
+        "contract": "Airdrop"
+      }
+    }
+  ],
+  "createdAt": "2026-05-09T06:49:49.371Z"
+}

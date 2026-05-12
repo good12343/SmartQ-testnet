@@ -1,19 +1,19 @@
 import "dotenv/config";
 import "@nomicfoundation/hardhat-toolbox";
 import "@nomicfoundation/hardhat-verify";
-
 import { HardhatUserConfig } from "hardhat/config";
 
-// 🔐 قراءة المتغيرات من .env
-const PRIVATE_KEY = process.env.PRIVATE_KEY || "";
-const ETH_RPC_URL = process.env.ETH_RPC_URL || "";
-const ETHERSCAN_API_KEY = process.env.ETHERSCAN_API_KEY || "";
+const {
+  PRIVATE_KEY,
+  SEPOLIA_RPC_URL,
+  ETHERSCAN_API_KEY,
+} = process.env;
 
 const config: HardhatUserConfig = {
   solidity: {
     version: "0.8.27",
     settings: {
-     evmVersion: "cancun",
+      evmVersion: "cancun",
       optimizer: {
         enabled: true,
         runs: 200,
@@ -22,24 +22,42 @@ const config: HardhatUserConfig = {
   },
 
   networks: {
-    // 🧪 شبكة محلية
+    // شبكة محلية للتطوير والاختبار
     hardhat: {
       chainId: 31337,
     },
 
-    // 🌍 Ethereum Mainnet
-    mainnet: {
-      url: ETH_RPC_URL,
+    // شبكة اختبار Sepolia
+    sepolia: {
+      url: SEPOLIA_RPC_URL || "https://rpc.sepolia.org",
       accounts: PRIVATE_KEY ? [PRIVATE_KEY] : [],
-      chainId: 1,
+      chainId: 11155111,
     },
   },
 
-  // ✅ إعدادات Etherscan Verify
   etherscan: {
-      apiKey: ETHERSCAN_API_KEY,
+    apiKey: {
+      sepolia: ETHERSCAN_API_KEY || "",
     },
-  };
+    customChains: [
+      {
+        network: "sepolia",
+        chainId: 11155111,
+        urls: {
+          apiURL: "https://api-sepolia.etherscan.io/api",
+          browserURL: "https://sepolia.etherscan.io",
+        },
+      },
+    ],
+  },
 
+  // مسارات المصادر (اختياري)
+  paths: {
+    sources: "./contracts",
+    tests: "./test",
+    cache: "./cache",
+    artifacts: "./artifacts",
+  },
+};
 
 export default config;
