@@ -1,3 +1,4 @@
+//النشر واعطى ومنح الادوار مالم تكن مقفله من تايم لوك 
 import { ethers } from "hardhat";
 
 async function main() {

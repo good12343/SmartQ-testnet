@@ -138,15 +138,15 @@ contract Vesting is AccessControl, ReentrancyGuard, Pausable {
         if (v.total == 0) revert NoAllocation();
         if (block.timestamp < startTime + CLIFF) revert CliffNotReached();
 
-        uint256 releasable = _releasable(msg.sender);
-        if (releasable == 0) revert NothingToClaim();
+        uint256 claimableAmount = _releasable(msg.sender);
+        if (claimableAmount == 0) revert NothingToClaim();
 
-        v.claimed += releasable;
-        totalClaimed += releasable;
+        v.claimed += claimableAmount;
+        totalClaimed += claimableAmount;
 
-        token.safeTransfer(msg.sender, releasable);
+        token.safeTransfer(msg.sender, claimableAmount);
 
-        emit Claimed(msg.sender, releasable);
+        emit Claimed(msg.sender, claimableAmount);
     }
 
     function _releasable(address user) internal view returns (uint256) {

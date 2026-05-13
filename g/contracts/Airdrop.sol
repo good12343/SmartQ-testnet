@@ -61,7 +61,7 @@ contract Airdrop is AccessControl, ReentrancyGuard, Pausable {
     event Claimed(address user, uint256 amount);
     event VestingUpdated(address vesting);
     event TreasuryUpdated(address treasury);
-    event Finalized(uint256 timestamp);
+    event AirdropFinalized(uint256 timestamp);
     event UnsoldReclaimed(uint256 amount);
 
     // ================= MODIFIERS =================
@@ -180,7 +180,7 @@ contract Airdrop is AccessControl, ReentrancyGuard, Pausable {
         require(block.timestamp > claimEnd, "not ended");
         finalized = true;
         _pause();
-        emit Finalized(block.timestamp);
+        emit AirdropFinalized(block.timestamp);
     }
 
     // ================= RECLAIM UNSOLD =================
