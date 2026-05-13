@@ -26,6 +26,10 @@ contract Airdrop is AccessControl, ReentrancyGuard, Pausable {
     error ExceedsCap();
     error InsufficientVestingBalance();
     error RootNotSet();
+    error Unauthorized();
+    error Finalized();
+    error NotFinalized();
+    error NothingToReclaim();
 
     // ================= ROLES =================
     bytes32 public constant GOVERNANCE_ROLE = keccak256("GOVERNANCE_ROLE");
@@ -58,10 +62,13 @@ contract Airdrop is AccessControl, ReentrancyGuard, Pausable {
     event VestingUpdated(address vesting);
     event TreasuryUpdated(address treasury);
     event Finalized(uint256 timestamp);
+    event UnsoldReclaimed(uint256 amount);
 
     // ================= MODIFIERS =================
     modifier onlyGov() {
-        if (!hasRole(GOVERNANCE_ROLE, msg.sender)) revert ZeroAddress();
+        if (!hasRole(GOVERNANCE_ROLE, msg.sender)) {
+            revert Unauthorized();
+        }
         _;
     }
 
@@ -72,6 +79,12 @@ contract Airdrop is AccessControl, ReentrancyGuard, Pausable {
         _;
     }
 
+    modifier notFinalized() {
+        if (finalized) revert Finalized();
+        _;
+    }
+
+    // ================= CONSTRUCTOR =================
     constructor(
         address _token,
         address _vesting,
@@ -99,10 +112,10 @@ contract Airdrop is AccessControl, ReentrancyGuard, Pausable {
         uint256 _start,
         uint256 _end,
         uint256 _cap
-    ) external onlyGov {
-        require(_root != bytes32(0), "root");
-        require(_start < _end, "time");
-        require(_end <= block.timestamp + MAX_WINDOW_EXTENSION, "too long");
+    ) external onlyGov notFinalized {
+        if (_root == bytes32(0)) revert RootNotSet();
+        if (_start >= _end) revert InvalidAmount();
+        if (_end > block.timestamp + MAX_WINDOW_EXTENSION) revert InvalidAmount();
 
         merkleRoot = _root;
         claimStart = _start;
@@ -151,13 +164,13 @@ contract Airdrop is AccessControl, ReentrancyGuard, Pausable {
     }
 
     // ================= GOVERNANCE =================
-    function updateVesting(address _v) external onlyGov {
+    function updateVesting(address _v) external onlyGov notFinalized {
         if (_v == address(0)) revert ZeroAddress();
         vesting = IVesting(_v);
         emit VestingUpdated(_v);
     }
 
-    function updateTreasury(address _t) external onlyGov {
+    function updateTreasury(address _t) external onlyGov notFinalized {
         if (_t == address(0)) revert ZeroAddress();
         treasury = _t;
         emit TreasuryUpdated(_t);
@@ -170,6 +183,18 @@ contract Airdrop is AccessControl, ReentrancyGuard, Pausable {
         emit Finalized(block.timestamp);
     }
 
+    // ================= RECLAIM UNSOLD =================
+    function reclaimUnsold() external onlyGov {
+        if (!finalized) revert NotFinalized();
+
+        uint256 bal = token.balanceOf(address(this));
+        if (bal == 0) revert NothingToReclaim();
+
+        token.safeTransfer(treasury, bal);
+
+        emit UnsoldReclaimed(bal);
+    }
+
     // ================= SAFETY =================
     function pause() external onlyGov {
         _pause();
@@ -178,6 +203,4 @@ contract Airdrop is AccessControl, ReentrancyGuard, Pausable {
     function unpause() external onlyGov {
         _unpause();
     }
-
-    receive() external payable {}
 }

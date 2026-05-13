@@ -4,14 +4,16 @@ pragma solidity ^0.8.20;
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {ERC20Permit} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Permit.sol";
 import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
-import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 /**
  * @title Token (Production Clean Version)
  * @dev Execution-only ERC20 Token governed by TimelockController
  */
-contract Token is ERC20, ERC20Permit, AccessControl, ReentrancyGuard, Pausable {
+contract Token is ERC20, ERC20Permit, AccessControl, Pausable {
+    using SafeERC20 for IERC20;
 
     // ═════════════════════════════════════════════
     // ERRORS
@@ -23,6 +25,7 @@ contract Token is ERC20, ERC20Permit, AccessControl, ReentrancyGuard, Pausable {
     error Token__NoEthToRescue();
     error Token__EthTransferFailed();
     error Token__RoleManagementLocked();
+    error Token__DexLocked();
 
     // ═════════════════════════════════════════════
     // CONSTANTS
@@ -37,6 +40,7 @@ contract Token is ERC20, ERC20Permit, AccessControl, ReentrancyGuard, Pausable {
     // ═════════════════════════════════════════════
     address public dexRouter;
     address public dexPair;
+    bool public dexLocked;
 
     mapping(address => bool) public isExcludedFromWalletCap;
 
@@ -46,7 +50,9 @@ contract Token is ERC20, ERC20Permit, AccessControl, ReentrancyGuard, Pausable {
     event TokensMinted(address indexed to, uint256 amount);
     event ExclusionUpdated(address indexed account, bool excluded);
     event DexSetupUpdated(address indexed router, address indexed pair);
+    event DexSetupLocked();
     event EthRescued(address indexed to, uint256 amount);
+    event ERC20Rescued(address indexed token, address indexed to, uint256 amount);
 
     // ═════════════════════════════════════════════
     // CONSTRUCTOR
@@ -116,6 +122,7 @@ contract Token is ERC20, ERC20Permit, AccessControl, ReentrancyGuard, Pausable {
         if (accounts.length != excluded.length) revert Token__ArrayLengthMismatch();
 
         for (uint256 i = 0; i < accounts.length; i++) {
+            if (accounts[i] == address(0)) revert Token__ZeroAddress();
             isExcludedFromWalletCap[accounts[i]] = excluded[i];
             emit ExclusionUpdated(accounts[i], excluded[i]);
         }
@@ -126,6 +133,7 @@ contract Token is ERC20, ERC20Permit, AccessControl, ReentrancyGuard, Pausable {
         onlyRole(GOVERNANCE_ROLE)
     {
         if (router == address(0) || pair == address(0)) revert Token__ZeroAddress();
+        if (dexLocked) revert Token__DexLocked();
 
         dexRouter = router;
         dexPair = pair;
@@ -133,6 +141,14 @@ contract Token is ERC20, ERC20Permit, AccessControl, ReentrancyGuard, Pausable {
         isExcludedFromWalletCap[pair] = true;
 
         emit DexSetupUpdated(router, pair);
+    }
+
+    function lockDexSetup()
+        external
+        onlyRole(GOVERNANCE_ROLE)
+    {
+        dexLocked = true;
+        emit DexSetupLocked();
     }
 
     function pause() external onlyRole(GOVERNANCE_ROLE) {
@@ -158,6 +174,21 @@ contract Token is ERC20, ERC20Permit, AccessControl, ReentrancyGuard, Pausable {
         emit EthRescued(to, bal);
     }
 
+    function rescueERC20(
+        address erc20,
+        address to,
+        uint256 amount
+    )
+        external
+        onlyRole(GOVERNANCE_ROLE)
+    {
+        if (to == address(0)) revert Token__ZeroAddress();
+
+        IERC20(erc20).safeTransfer(to, amount);
+
+        emit ERC20Rescued(erc20, to, amount);
+    }
+
     // ═════════════════════════════════════════════
     // TRANSFER LOGIC (Wallet Cap)
     // ═════════════════════════════════════════════
@@ -169,7 +200,9 @@ contract Token is ERC20, ERC20Permit, AccessControl, ReentrancyGuard, Pausable {
     {
         if (from != address(0) && to != address(0)) {
             if (!isExcludedFromWalletCap[to]) {
-                require(balanceOf(to) + value <= WALLET_CAP, "WALLET_CAP_EXCEEDED");
+                unchecked {
+                    require(balanceOf(to) + value <= WALLET_CAP, "WALLET_CAP_EXCEEDED");
+                }
             }
         }
 
@@ -185,4 +218,5 @@ contract Token is ERC20, ERC20Permit, AccessControl, ReentrancyGuard, Pausable {
     }
 
     receive() external payable {}
+
 }

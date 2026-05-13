@@ -16,11 +16,11 @@ contract Vesting is AccessControl, ReentrancyGuard, Pausable {
     error ZeroAddress();
     error NotAuthorized();
     error NoAllocation();
-    error AlreadyAllocated();
     error CliffNotReached();
     error NothingToClaim();
     error InsufficientBalance();
     error RoleLocked();
+    error InvalidAmount();
 
     // ═══════════════════════════════════════════════
     // CONSTANTS
@@ -51,7 +51,6 @@ contract Vesting is AccessControl, ReentrancyGuard, Pausable {
     }
 
     mapping(address => Vest) public vesting;
-    mapping(address => bool) public depositor;
 
     uint256 public totalAllocated;
     uint256 public totalClaimed;
@@ -63,6 +62,7 @@ contract Vesting is AccessControl, ReentrancyGuard, Pausable {
     event Claimed(address user, uint256 amount);
     event Deposited(uint256 amount);
     event Finalized(uint256 time);
+    event ERC20Rescued(address token, address to, uint256 amount);
 
     // ═══════════════════════════════════════════════
     // MODIFIERS
@@ -73,7 +73,7 @@ contract Vesting is AccessControl, ReentrancyGuard, Pausable {
     }
 
     modifier onlyAllowed() {
-        if (!hasRole(GOVERNANCE_ROLE, msg.sender) && !depositor[msg.sender]) {
+        if (!hasRole(GOVERNANCE_ROLE, msg.sender) && !hasRole(DEPOSITOR_ROLE, msg.sender)) {
             revert NotAuthorized();
         }
         _;
@@ -110,16 +110,12 @@ contract Vesting is AccessControl, ReentrancyGuard, Pausable {
         emit Deposited(amount);
     }
 
-    function setDepositor(address user, bool ok) external onlyGov {
-        depositor[user] = ok;
-    }
-
     // ═══════════════════════════════════════════════
     // ALLOCATION
     // ═══════════════════════════════════════════════
     function allocate(address user, uint256 amount) external onlyAllowed {
         if (user == address(0)) revert ZeroAddress();
-        if (vesting[user].total != 0) revert AlreadyAllocated();
+        if (amount == 0) revert InvalidAmount();
 
         uint256 required = totalAllocated + amount - totalClaimed;
 
@@ -127,11 +123,7 @@ contract Vesting is AccessControl, ReentrancyGuard, Pausable {
             revert InsufficientBalance();
         }
 
-        vesting[user] = Vest({
-            total: amount,
-            claimed: 0
-        });
-
+        vesting[user].total += amount;
         totalAllocated += amount;
 
         emit Allocated(user, amount);
@@ -158,7 +150,7 @@ contract Vesting is AccessControl, ReentrancyGuard, Pausable {
     }
 
     function _releasable(address user) internal view returns (uint256) {
-        Vest memory v = vesting[user];
+        Vest storage v = vesting[user];
         if (v.total == 0) return 0;
 
         uint256 elapsed = block.timestamp - (startTime + CLIFF);
@@ -171,6 +163,14 @@ contract Vesting is AccessControl, ReentrancyGuard, Pausable {
         if (vested <= v.claimed) return 0;
 
         return vested - v.claimed;
+    }
+
+    function releasable(address user)
+        external
+        view
+        returns (uint256)
+    {
+        return _releasable(user);
     }
 
     // ═══════════════════════════════════════════════
@@ -201,5 +201,22 @@ contract Vesting is AccessControl, ReentrancyGuard, Pausable {
         super.renounceRole(role, account);
     }
 
-    receive() external payable {}
+    // ═══════════════════════════════════════════════
+    // EMERGENCY RECOVERY
+    // ═══════════════════════════════════════════════
+    function rescueERC20(
+        address erc20,
+        address to,
+        uint256 amount
+    )
+        external
+        onlyGov
+    {
+        if (to == address(0)) revert ZeroAddress();
+        if (amount == 0) revert InvalidAmount();
+
+        IERC20(erc20).safeTransfer(to, amount);
+
+        emit ERC20Rescued(erc20, to, amount);
+    }
 }
