@@ -28,8 +28,8 @@ contract Vesting is AccessControl, ReentrancyGuard, Pausable {
     bytes32 public constant GOVERNANCE_ROLE = keccak256("GOVERNANCE_ROLE");
     bytes32 public constant DEPOSITOR_ROLE  = keccak256("DEPOSITOR_ROLE");
 
-    uint256 public constant CLIFF = 180 days;
-    uint256 public constant MONTH = 30 days;
+    uint256 public constant CLIFF = 4 days;
+    uint256 public constant MONTH = 1 days;
     uint256 public constant TOTAL_STAGES = 4;
     uint256 public constant STAGE_SHARE = 25; // %
 

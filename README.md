@@ -4,9 +4,19 @@
 
 2. تشغيل grant-proposer.ts
 
+npx hardhat run scripts/grant-proposer.ts --network sepolia
+
 
 3. تشغيل grant-executor.ts
 
+npx hardhat run scripts/grant-executor.ts --network sepolia
+
 
 4. تشغيل execute-roles.ts تنفييذ معا الانتظار
- اذا كان التنفيذ بدون  انتظار تشغيل execute-only.ts
+
+
+npx hardhat run scripts/execute-roles.ts --network sepolia
+
+
+ اذا كان التنفيذ بدون  
+ انتظار تشغيل execute-only.ts

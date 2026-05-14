@@ -36,8 +36,8 @@ contract Airdrop is AccessControl, ReentrancyGuard, Pausable {
     bytes32 public constant OPERATOR_ROLE = keccak256("OPERATOR_ROLE");
 
     // ================= CONSTANTS =================
-    uint256 public constant GOVERNANCE_LOCK = 180 days;
-    uint256 public constant MAX_WINDOW_EXTENSION = 180 days;
+    uint256 public constant GOVERNANCE_LOCK = 10 days;
+    uint256 public constant MAX_WINDOW_EXTENSION = 10 days;
 
     // ================= STATE =================
     IERC20 public immutable token;
