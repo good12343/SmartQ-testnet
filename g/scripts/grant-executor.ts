@@ -3,7 +3,7 @@ import { ethers } from "hardhat";
 
 async function main() {
   const [deployer] = await ethers.getSigners();
-  const TIMELOCK = "0xe1fe5Cf76BE0f9B2979896CffAA4232eAD127bE6"; // ضع العنوان الصحيح
+  const TIMELOCK = "0xCf1ad78B4f6C39271FB6Eb3d8A35f56b5D23480B"; // ضع العنوان الصحيح
 
   const EXECUTOR_ROLE = ethers.keccak256(ethers.toUtf8Bytes("EXECUTOR_ROLE"));
 

@@ -71,6 +71,8 @@ contract Sale is AccessControl, ReentrancyGuard, Pausable {
     event MinPurchaseUpdated(uint256 newMin);
     event Finalized(uint256 timestamp);
     event UnsoldReclaimed(uint256 amount);
+    event SaleWindowUpdated(uint256 indexed start, uint256 indexed end);
+
 
     // ───── MODIFIERS ─────
     modifier notFinalized() {
@@ -216,6 +218,24 @@ contract Sale is AccessControl, ReentrancyGuard, Pausable {
         minPurchase = min;
         emit MinPurchaseUpdated(min);
     }
+
+    function setSaleWindow(uint256 start, uint256 end)
+    external
+    onlyRole(OPERATOR_ROLE)
+    notFinalized
+    {
+    require(block.timestamp < saleStart, "Sale already started");
+    require(start >= block.timestamp, "Start must be in future");  // ✅ جديد
+    require(end > start, "Invalid window");
+    require(end - start <= 365 days, "Window too long");           // ✅ جديد (اختياري)
+    require(end - start >= 1 hours, "Window too short");           // ✅ جديد (اختياري)
+
+    saleStart = start;
+    saleEnd = end;
+
+    emit SaleWindowUpdated(start, end);  // ✅ إضافة event
+    }
+
 
     // ───── FINALIZE ─────
     function finalize()
