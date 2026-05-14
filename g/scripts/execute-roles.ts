@@ -9,10 +9,10 @@ async function main() {
   console.log("📌 Deployer:", deployer.address);
 
   // ═══════════════ العناوين (استبدلها بعناوينك) ═══════════════
-  const TIMELOCK = process.env.TIMELOCK_ADDRESS || "0x106628307cE23559c756C139c1A0EA39E5661FF6";
-  const VESTING = process.env.VESTING_ADDRESS || "0x5005683d28837692069b042D7277Ff7CEb6636F0";
-  const SALE = process.env.SALE_ADDRESS || "0x07990E955001b7099B22dA37594542d85FD2c624";
-  const AIRDROP = process.env.AIRDROP_ADDRESS || "0x99A9bD1bb7d441adE84eD412549C2b61F3DF2B44";
+  const TIMELOCK = process.env.TIMELOCK_ADDRESS || "0x308d5a855b14b04d0f82C7945b231163c88D146D";
+  const VESTING = process.env.VESTING_ADDRESS || "0x86B328845a780A65406AAdb07cEF89148AA4D908";
+  const SALE = process.env.SALE_ADDRESS || "0x715eBc6cA2d78d3Cfc468f58547fcD19BcD77F93";
+  const AIRDROP = process.env.AIRDROP_ADDRESS || "0xd4B726c23793e8b04a6c8b67306960C9Da579546";
 
   // ═══════════════ تعريف الدور ═══════════════
   const DEPOSITOR_ROLE = ethers.keccak256(
