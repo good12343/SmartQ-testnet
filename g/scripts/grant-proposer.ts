@@ -3,7 +3,7 @@ import { ethers } from "hardhat";
 
 async function main() {
   const [deployer] = await ethers.getSigners();
-  const TIMELOCK = process.env.TIMELOCK_ADDRESS || "0xCf1ad78B4f6C39271FB6Eb3d8A35f56b5D23480B";
+  const TIMELOCK = process.env.TIMELOCK_ADDRESS || "0x00337C1B3424dd6dda3Ada4e66E31C412118AC13";
 
   const PROPOSER_ROLE = ethers.keccak256(ethers.toUtf8Bytes("PROPOSER_ROLE"));
 
