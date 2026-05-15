@@ -302,28 +302,28 @@ contract PriceOracleV3 is AccessControl, Pausable {
 
     /// @notice Get price from Chainlink feed
     function _getChainlinkPrice(address feed) internal view returns (uint256) {
-        AggregatorV3Interface aggregator = AggregatorV3Interface(feed);
+    AggregatorV3Interface aggregator = AggregatorV3Interface(feed);
 
-        (
-            uint80 roundId,
-            int256 answer,
-            uint256 startedAt,
-            uint256 updatedAt,
-            uint80 answeredInRound
-        ) = aggregator.latestRoundData();
+    (, int256 answer, , uint256 updatedAt, ) = aggregator.latestRoundData();
 
-        // Validate Chainlink data
-        if (answer <= 0) revert PO__InvalidPrice();
-        if (updatedAt == 0) revert PO__StalePrice();
-        if (answeredInRound < roundId) revert PO__StalePrice();
-        if (block.timestamp - updatedAt > STALENESS_THRESHOLD) revert PO__StalePrice();
-
-        // Chainlink prices are 8 decimals for ETH/USD
-        uint8 feedDecimals = aggregator.decimals();
-
-        // Convert to 1e6 precision
-        return uint256(answer) * (10 ** (6 - feedDecimals));
+    if (answer <= 0) revert PO__InvalidPrice();
+    if (updatedAt == 0 || block.timestamp - updatedAt > STALENESS_THRESHOLD) {
+        revert PO__StalePrice();
     }
+
+    uint256 price = uint256(answer);
+    uint8 feedDecimals = aggregator.decimals();
+
+    if (feedDecimals > 6) {
+        uint256 diff = feedDecimals - 6;
+        price = price / (10 ** diff);
+    } else if (feedDecimals < 6) {
+        uint256 diff = 6 - feedDecimals;
+        price = price * (10 ** diff);
+    }
+
+    return price;
+}
 
     /// @notice Get Chainlink price directly (external view)
     function getChainlinkPrice(address currency) external view returns (uint256) {
