@@ -22,12 +22,9 @@ const config: HardhatUserConfig = {
   },
 
   networks: {
-    // شبكة محلية للتطوير والاختبار
     hardhat: {
       chainId: 31337,
     },
-
-    // شبكة اختبار Sepolia
     sepolia: {
       url: SEPOLIA_RPC_URL || "https://rpc.sepolia.org",
       accounts: PRIVATE_KEY ? [PRIVATE_KEY] : [],
@@ -36,22 +33,9 @@ const config: HardhatUserConfig = {
   },
 
   etherscan: {
-    apiKey: {
-      sepolia: ETHERSCAN_API_KEY || "",
-    },
-    customChains: [
-      {
-        network: "sepolia",
-        chainId: 11155111,
-        urls: {
-          apiURL: "https://api-sepolia.etherscan.io/api",
-          browserURL: "https://sepolia.etherscan.io",
-        },
-      },
-    ],
+    apiKey: ETHERSCAN_API_KEY || "",
   },
 
-  // مسارات المصادر (اختياري)
   paths: {
     sources: "./contracts",
     tests: "./test",
