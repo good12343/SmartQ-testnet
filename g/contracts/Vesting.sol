@@ -128,7 +128,11 @@ contract Vesting is AccessControl, ReentrancyGuard, Pausable {
 
         emit Allocated(user, amount);
     }
-
+     
+     function getReservedTokens() external view returns (uint256) {
+    // الرموز المحجوزة = المخصصات التي لم تُسحب بعد
+    return totalAllocated - totalClaimed;
+    }
     // ═══════════════════════════════════════════════
     // CLAIM LOGIC
     // ═══════════════════════════════════════════════
